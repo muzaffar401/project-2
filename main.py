@@ -93,7 +93,8 @@ class ProductDescriptionGenerator:
         
         Requirements:
         - The description must be at least 1000 characters and should not be cut off or incomplete. If you need to, add more relevant details to reach this length.
-        - Use 2-3 well-structured paragraphs, separated by double newlines.
+        - The description MUST be in 2 or 3 well-structured paragraphs, each separated by TWO newlines (\n\n). Do NOT write a single paragraph or a single line.
+        - Each paragraph should focus on different aspects (e.g., features, benefits, usage, quality, value, customer experience).
         - Only use standard punctuation. No special characters or formatting.
         - Avoid extra spaces and ensure natural, readable English.
         - Include key features, benefits, and usage information.
@@ -123,13 +124,15 @@ class ProductDescriptionGenerator:
         Requirements:
         - Analyze the product image (if available) and use any visible features, colors, packaging, or branding to enhance the description.
         - The description must be at least 1000 characters and should not be cut off or incomplete. If you need to, add more relevant details to reach this length.
-        - Use 2-3 well-structured paragraphs, separated by double newlines.
+        - The description MUST be in 2 or 3 well-structured paragraphs, each separated by TWO newlines (\n\n). Do NOT write a single paragraph or a single line.
+        - Each paragraph should focus on different aspects (e.g., features, benefits, usage, quality, value, customer experience).
         - Only use standard punctuation. No special characters or formatting.
         - Avoid extra spaces and ensure natural, readable English.
         - Include key features, benefits, and usage information.
         - Focus on quality, value, and customer benefits.
         - Do not repeat phrases. Do not add ellipsis at the end.
         - End with a complete sentence and ensure the description is not abruptly cut off.
+        - Do not add any other text or comments.
         - If you reach the end and the description is not yet 1000 characters, add more relevant details until it is complete.
         """
         try:

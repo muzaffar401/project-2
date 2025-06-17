@@ -8,8 +8,184 @@ from PIL import Image
 import io
 import google.generativeai as genai
 
+# Configure page - must be the first Streamlit command
+st.set_page_config(
+    page_title="Product Description Generator",
+    page_icon="📝",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 # Load environment variables
 load_dotenv()
+
+# Simple, modern, theme-adaptive CSS
+st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@500;700&display=swap');
+    html, body, .stApp {
+        font-family: 'Montserrat', sans-serif;
+    }
+    .simple-card {
+        background: var(--background-color);
+        border-radius: 16px;
+        box-shadow: 0 2px 12px rgba(60,60,60,0.07);
+        padding: 28px 24px 24px 24px;
+        margin: 18px 0;
+        border: 1px solid var(--secondary-background-color);
+    }
+    .simple-title {
+        font-size: 2.2em;
+        font-weight: 700;
+        color: var(--primary-color);
+        margin-bottom: 0.2em;
+        margin-top: 0.2em;
+        text-align: center;
+        letter-spacing: 1px;
+    }
+    .simple-subtitle {
+        color: var(--text-color);
+        font-size: 1.1em;
+        text-align: center;
+        margin-bottom: 2em;
+    }
+    .simple-btn button {
+        background: var(--primary-color);
+        color: var(--background-color);
+        border: none;
+        border-radius: 8px;
+        font-size: 1.05em;
+        font-weight: 600;
+        padding: 10px 32px;
+        margin-top: 16px;
+        box-shadow: 0 2px 8px rgba(60,60,60,0.10);
+        transition: box-shadow 0.2s, transform 0.2s;
+    }
+    .simple-btn button:hover {
+        box-shadow: 0 4px 16px rgba(60,60,60,0.13);
+        transform: translateY(-2px);
+    }
+    .simple-progress .stProgress > div > div {
+        background: linear-gradient(90deg, var(--primary-color) 0%, var(--secondary-color) 100%) !important;
+        border-radius: 8px;
+        height: 14px !important;
+    }
+    .simple-upload .stFileUploader {
+        background: var(--secondary-background-color);
+        border: 1.5px solid var(--primary-color);
+        border-radius: 10px;
+        color: var(--text-color);
+        margin-bottom: 16px;
+    }
+    .simple-info {
+        background: var(--secondary-background-color);
+        border-left: 4px solid var(--primary-color);
+        border-radius: 8px;
+        padding: 14px 20px;
+        margin: 14px 0;
+        color: var(--text-color);
+        font-size: 1em;
+    }
+    .simple-error {
+        background: var(--secondary-background-color);
+        border-left: 4px solid #e74c3c;
+        border-radius: 8px;
+        padding: 14px 20px;
+        margin: 14px 0;
+        color: #e74c3c;
+        font-size: 1em;
+    }
+    .stSelectbox, .stTextInput, .stDownloadButton button {
+        background: var(--secondary-background-color) !important;
+        color: var(--text-color) !important;
+        border-radius: 8px !important;
+        border: 1.5px solid var(--primary-color) !important;
+    }
+    .stSelectbox > div[data-baseweb="select"] {
+        cursor: pointer !important;
+    }
+    .stSelectbox input {
+        pointer-events: none !important;
+        user-select: none !important;
+        background: transparent !important;
+        color: var(--text-color) !important;
+        caret-color: transparent !important;
+    }
+    /* Target the dropdown arrow button for pointer cursor */
+    .stSelectbox [data-baseweb="select"] button,
+    .stSelectbox [aria-label="Open"] {
+        cursor: pointer !important;
+    }
+    /* Make the entire selectbox area a pointer on hover */
+    .stSelectbox:hover, .stSelectbox:active, .stSelectbox:focus {
+        cursor: pointer !important;
+    }
+    /* Target the dropdown indicator button and SVG */
+    .stSelectbox [data-baseweb="select"] button,
+    .stSelectbox [aria-label="Open"],
+    .stSelectbox svg,
+    .stSelectbox [data-testid="stSelectbox"] svg {
+        cursor: pointer !important;
+    }
+    /* Target the BaseWeb dropdown indicator container */
+    .stSelectbox [data-baseweb="select"] > div[role="button"] {
+        cursor: pointer !important;
+    }
+    .stats-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 24px;
+        margin: 24px 0 32px 0;
+        justify-content: flex-start;
+    }
+    .stat-card {
+        background: var(--secondary-background-color);
+        border-radius: 10px;
+        padding: 18px 28px;
+        min-width: 220px;
+        box-shadow: 0 2px 8px rgba(60,60,60,0.07);
+        display: flex;
+        align-items: center;
+        gap: 16px;
+    }
+    .stat-icon {
+        font-size: 1.6em;
+        opacity: 0.85;
+    }
+    .stat-label {
+        color: var(--text-color);
+        font-size: 1em;
+        margin-bottom: 2px;
+    }
+    .stat-value {
+        font-size: 1.3em;
+        font-weight: 700;
+        color: var(--primary-color);
+    }
+    .styled-download {
+        margin: 32px 0 0 0;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    .styled-download .stDownloadButton button {
+        background: var(--primary-color);
+        color: var(--background-color);
+        border-radius: 8px;
+        font-size: 1.1em;
+        font-weight: 600;
+        padding: 12px 36px;
+        margin-top: 10px;
+        margin-bottom: 10px;
+        box-shadow: 0 2px 8px rgba(60,60,60,0.10);
+        transition: box-shadow 0.2s, transform 0.2s;
+    }
+    .styled-download .stDownloadButton button:hover {
+        box-shadow: 0 4px 16px rgba(60,60,60,0.13);
+        transform: translateY(-2px);
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 def process_dataframe(df):
     """Process dataframe to remove duplicates and prepare for analysis"""
@@ -19,83 +195,139 @@ def process_dataframe(df):
     return df, original_count, cleaned_count
 
 def main():
-    # Configure page
-    st.set_page_config(
-        page_title="Product Description Generator",
-        page_icon="📝",
-        layout="wide"
-    )
-
-    # Title and description
-    st.title("Product Description Generator")
     st.markdown("""
-    This tool helps you generate product descriptions and find related products using AI.\n
-    **Choose your scenario and upload the required files to get started.**
-    """)
+        <div class='simple-title'>📝 Product Description Generator</div>
+        <div class='simple-subtitle'>Transform your product data into compelling descriptions using AI</div>
+    """, unsafe_allow_html=True)
 
-    # Scenario selection
-    scenario_options = [
-        "Select your scenario",
-        "Only Product SKUs",
-        "Product SKUs with Image Names"
-    ]
-    scenario = st.selectbox(
-        "Select Input Scenario",
-        scenario_options,
-        index=0,
-        key="scenario_select",
-        help="Choose the type of input you want to provide."
-    )
+    # Centered layout with two simple cards
+    col1, col2 = st.columns([1, 2], gap="large")
 
-    if scenario == "Select your scenario":
-        st.info("Please select a scenario to continue.")
-        return
-
-    if scenario == "Only Product SKUs":
-        uploaded_file = st.file_uploader("Upload Excel file with product SKUs", type=['xlsx', 'xls'])
-        if uploaded_file is not None:
-            try:
-                df = pd.read_excel(uploaded_file)
-                st.session_state['df'] = df
-                st.session_state['scenario'] = 'sku_only'
-            except Exception as e:
-                st.error(f"Error reading file: {str(e)}")
-                return
-    else:
-        uploaded_file = st.file_uploader("Upload Excel file with SKUs and Image Names (columns: sku, image_name)", type=['xlsx', 'xls'])
-        uploaded_images = st.file_uploader(
-            "Upload all product images (select multiple files)",
-            type=["jpg", "jpeg", "png", "webp", "bmp"],
-            accept_multiple_files=True
+    with col1:
+        st.markdown("""
+            <div class='simple-card'>
+                <h2 style='color: var(--primary-color); font-weight: 700;'>📋 Input Options</h2>
+            </div>
+        """, unsafe_allow_html=True)
+        scenario_options = [
+            "Select your scenario",
+            "Only Product SKUs",
+            "Product SKUs with Image Names"
+        ]
+        scenario = st.selectbox(
+            "Choose Input Type",
+            scenario_options,
+            index=0,
+            key="scenario_select",
+            help="Select how you want to provide your product information"
         )
-        if uploaded_file is not None:
-            try:
-                df = pd.read_excel(uploaded_file)
-                st.session_state['df'] = df
-                st.session_state['scenario'] = 'sku_image'
-                st.session_state['uploaded_images'] = uploaded_images
-            except Exception as e:
-                st.error(f"Error reading file: {str(e)}")
-                return
 
-    # Process data if we have it (either from upload or sample)
+    with col2:
+        if scenario == "Select your scenario":
+            st.markdown("""
+                <div class='simple-info'>
+                    <b>👉 Please select a scenario to begin</b><br>
+                    Choose how you want to provide your product information to get started.
+                </div>
+            """, unsafe_allow_html=True)
+            return
+        if scenario == "Only Product SKUs":
+            st.markdown("<div class='simple-card'><h3 style='color:var(--primary-color);'>📤 Upload Product Data</h3>", unsafe_allow_html=True)
+            uploaded_file = st.file_uploader(
+                "Upload your product SKUs file",
+                type=['xlsx', 'xls', 'csv'],
+                help="Upload a file containing your product SKUs",
+                key="sku_file",
+                label_visibility="collapsed"
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+            if uploaded_file is not None:
+                try:
+                    if uploaded_file.name.endswith('.csv'):
+                        df = pd.read_csv(uploaded_file)
+                    else:
+                        df = pd.read_excel(uploaded_file)
+                    st.session_state['df'] = df
+                    st.session_state['scenario'] = 'sku_only'
+                    st.success("✅ File uploaded successfully!")
+                except Exception as e:
+                    st.markdown(f"<div class='simple-error'>❌ Error reading file: {str(e)}</div>", unsafe_allow_html=True)
+                    return
+        else:
+            st.markdown("<div class='simple-card'><h3 style='color:var(--primary-color);'>📤 Upload Product Data & Images</h3>", unsafe_allow_html=True)
+            uploaded_file = st.file_uploader(
+                "Upload file with SKUs and Image Names",
+                type=['xlsx', 'xls', 'csv'],
+                help="Upload a file containing SKUs and corresponding image names",
+                key="sku_img_file",
+                label_visibility="collapsed"
+            )
+            uploaded_images = st.file_uploader(
+                "Upload Product Images",
+                type=["jpg", "jpeg", "png", "webp", "bmp"],
+                accept_multiple_files=True,
+                help="Upload all product images",
+                key="img_files",
+                label_visibility="collapsed"
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+            if uploaded_file is not None:
+                try:
+                    if uploaded_file.name.endswith('.csv'):
+                        df = pd.read_csv(uploaded_file)
+                    else:
+                        df = pd.read_excel(uploaded_file)
+                    st.session_state['df'] = df
+                    st.session_state['scenario'] = 'sku_image'
+                    st.session_state['uploaded_images'] = uploaded_images
+                    st.success("✅ File uploaded successfully!")
+                except Exception as e:
+                    st.markdown(f"<div class='simple-error'>❌ Error reading file: {str(e)}</div>", unsafe_allow_html=True)
+                    return
+
+    # Data Processing Section
     if 'df' in st.session_state and 'scenario' in st.session_state:
         df = st.session_state['df']
         scenario = st.session_state['scenario']
+        st.markdown("""
+            <div class='simple-card' style='margin-top: 32px;'>
+                <h3 style='color:var(--primary-color);'>📊 Data Processing</h3>
+            </div>
+        """, unsafe_allow_html=True)
         if scenario == 'sku_only':
-            # Check if 'sku' column exists
             if 'sku' not in df.columns:
-                st.error("The file must contain a 'sku' column!")
+                st.markdown("<div class='simple-error'>❌ The file must contain a 'sku' column!</div>", unsafe_allow_html=True)
                 return
-            # Process and clean data
             cleaned_df, original_count, cleaned_count = process_dataframe(df)
-            st.info(f"Original number of products: {original_count}")
-            st.info(f"Number of products after removing duplicates: {cleaned_count}")
-            st.info(f"Number of duplicates removed: {original_count - cleaned_count}")
+            st.markdown(f"""
+                <div class='stats-bar'>
+                    <div class='stat-card'>
+                        <span class='stat-icon'>📦</span>
+                        <div>
+                            <div class='stat-label'>Original number of products</div>
+                            <div class='stat-value'>{original_count}</div>
+                        </div>
+                    </div>
+                    <div class='stat-card'>
+                        <span class='stat-icon'>✅</span>
+                        <div>
+                            <div class='stat-label'>After removing duplicates</div>
+                            <div class='stat-value'>{cleaned_count}</div>
+                        </div>
+                    </div>
+                    <div class='stat-card'>
+                        <span class='stat-icon'>🗑️</span>
+                        <div>
+                            <div class='stat-label'>Duplicates removed</div>
+                            <div class='stat-value'>{original_count - cleaned_count}</div>
+                        </div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
             total_products = len(cleaned_df)
             progress_bar = st.progress(0)
             status_text = st.empty()
-            if st.button("Start Processing"):
+            if st.button("Start Processing", key="start_btn", type="primary"):
                 with st.spinner("Processing products..."):
                     try:
                         GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -126,19 +358,21 @@ def main():
                         ]
                         total_to_process = len(to_process)
                         if total_to_process == 0:
-                            st.success("All products have already been processed!")
+                            st.markdown("<div class='simple-info'>All products have already been processed!</div>", unsafe_allow_html=True)
                             with open('enriched_products.csv', 'rb') as f:
+                                st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
                                 st.download_button(
-                                    label="Download Results",
+                                    label="⬇️ Download Results",
                                     data=f,
                                     file_name="enriched_products.csv",
                                     mime="text/csv"
                                 )
+                                st.markdown("</div>", unsafe_allow_html=True)
                             return
                         for i, (row_idx, row) in enumerate(to_process.iterrows()):
                             progress = int(((i + 1) / total_to_process) * 100)
                             progress_bar.progress(progress)
-                            status_text.text(f"Processing product {i + 1} of {total_to_process}: {row['sku']}")
+                            status_text.markdown(f"<span style='color:var(--primary-color);'>Processing product <b>{i + 1}</b> of <b>{total_to_process}</b>: <b>{row['sku']}</b></span>", unsafe_allow_html=True)
                             try:
                                 description = generator.generate_product_description(row['sku'])
                                 merged_df.at[row_idx, 'description'] = description
@@ -146,65 +380,81 @@ def main():
                                 merged_df.at[row_idx, 'related_products'] = '|'.join(related)
                                 merged_df.to_csv('enriched_products.csv', index=False)
                             except Exception as e:
-                                st.error(f"Error processing product {row['sku']}: {str(e)}")
+                                st.markdown(f"<div class='simple-error'>Error processing product {row['sku']}: {str(e)}</div>", unsafe_allow_html=True)
                                 continue
                             time.sleep(30)
-                        st.success("Processing completed!")
+                        st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
                         with open('enriched_products.csv', 'rb') as f:
+                            st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
                             st.download_button(
-                                label="Download Results",
+                                label="⬇️ Download Results",
                                 data=f,
                                 file_name="enriched_products.csv",
                                 mime="text/csv"
                             )
+                            st.markdown("</div>", unsafe_allow_html=True)
                     except Exception as e:
-                        st.error(f"An error occurred during processing: {str(e)}")
+                        st.markdown(f"<div class='simple-error'>An error occurred during processing: {str(e)}</div>", unsafe_allow_html=True)
         elif scenario == 'sku_image':
-            # Check for required columns
             if 'sku' not in df.columns or 'image_name' not in df.columns:
-                st.error("The file must contain both 'sku' and 'image_name' columns!")
+                st.markdown("<div class='simple-error'>❌ The file must contain both 'sku' and 'image_name' columns!</div>", unsafe_allow_html=True)
                 return
-            # Check if images are uploaded
             uploaded_images = st.session_state.get('uploaded_images', None)
             if not uploaded_images or len(uploaded_images) == 0:
-                st.warning("Please upload all product images before starting processing.")
+                st.markdown("<div class='simple-info'>Please upload all product images before starting processing.</div>", unsafe_allow_html=True)
                 return
-            # Map image_name to uploaded file
             image_name_set = set(df['image_name'].astype(str))
             uploaded_image_names = set([img.name for img in uploaded_images])
             missing_images = image_name_set - uploaded_image_names
-            # Show total images and products
-            st.info(f"Total products: {len(df)}")
-            st.info(f"Total images uploaded: {len(uploaded_images)}")
+            st.markdown(f"<div class='simple-info'>Total products: <b>{len(df)}</b><br>Total images uploaded: <b>{len(uploaded_images)}</b></div>", unsafe_allow_html=True)
             if missing_images:
-                st.error(f"The following images are missing in the uploaded files: {', '.join(missing_images)}")
+                st.markdown(f"<div class='simple-error'>The following images are missing in the uploaded files: {', '.join(missing_images)}</div>", unsafe_allow_html=True)
                 return
-            # Process and clean data
             cleaned_df, original_count, cleaned_count = process_dataframe(df)
-            st.info(f"Original number of products: {original_count}")
-            st.info(f"Number of products after removing duplicates: {cleaned_count}")
-            st.info(f"Number of duplicates removed: {original_count - cleaned_count}")
+            st.markdown(f"""
+                <div class='stats-bar'>
+                    <div class='stat-card'>
+                        <span class='stat-icon'>📦</span>
+                        <div>
+                            <div class='stat-label'>Original number of products</div>
+                            <div class='stat-value'>{original_count}</div>
+                        </div>
+                    </div>
+                    <div class='stat-card'>
+                        <span class='stat-icon'>✅</span>
+                        <div>
+                            <div class='stat-label'>After removing duplicates</div>
+                            <div class='stat-value'>{cleaned_count}</div>
+                        </div>
+                    </div>
+                    <div class='stat-card'>
+                        <span class='stat-icon'>🗑️</span>
+                        <div>
+                            <div class='stat-label'>Duplicates removed</div>
+                            <div class='stat-value'>{original_count - cleaned_count}</div>
+                        </div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
             total_products = len(cleaned_df)
             progress_bar = st.progress(0)
             status_text = st.empty()
             download_ready = False
-            if st.button("Start Processing"):
+            if st.button("Start Processing", key="start_btn_img", type="primary"):
                 with st.spinner("Processing products with images..."):
                     try:
                         GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
                         OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
                         use_openai = bool(OPENAI_API_KEY) and not bool(GEMINI_API_KEY)
                         generator = ProductDescriptionGenerator(use_openai=use_openai)
-                        # Prepare output DataFrame
                         output_df = cleaned_df.copy()
                         output_df['description'] = ''
                         output_df['related_products'] = ''
-                        # Map image_name to file object
                         image_file_map = {img.name: img for img in uploaded_images}
                         for i, row in output_df.iterrows():
                             progress = int(((i + 1) / total_products) * 100)
                             progress_bar.progress(progress)
-                            status_text.text(f"Processing product {i + 1} of {total_products}: {row['sku']}")
+                            status_text.markdown(f"<span style='color:var(--primary-color);'>Processing product <b>{i + 1}</b> of <b>{total_products}</b>: <b>{row['sku']}</b></span>", unsafe_allow_html=True)
                             try:
                                 sku = str(row['sku']) if pd.notna(row['sku']) and row['sku'] != '' else None
                                 image_name = str(row['image_name']) if pd.notna(row['image_name']) and row['image_name'] != '' else None
@@ -214,13 +464,12 @@ def main():
                                     image_file.seek(0)
                                     try:
                                         img = Image.open(io.BytesIO(image_bytes))
-                                        img.verify()  # Will raise if not a valid image
+                                        img.verify()
                                     except Exception as img_e:
-                                        st.error(f"Image {image_name} is not a valid image: {img_e}")
+                                        st.markdown(f"<div class='simple-error'>Image {image_name} is not a valid image: {img_e}</div>", unsafe_allow_html=True)
                                         output_df.at[i, 'description'] = 'Image invalid.'
                                         output_df.at[i, 'related_products'] = ''
                                         continue
-                                # Mismatch validation: check if SKU and image are unrelated
                                 if sku and image_file:
                                     img = Image.open(io.BytesIO(image_bytes))
                                     mime_type = Image.MIME[img.format]
@@ -231,13 +480,11 @@ def main():
                                     )
                                     if not generator.use_openai:
                                         mismatch_result = generator._make_api_call(mismatch_prompt, image_bytes=image_bytes, mime_type=mime_type)
-                                        print('Gemini mismatch result:', mismatch_result)  # For debugging
                                     else:
                                         mismatch_result = "OK"
                                     if mismatch_result.strip().upper() == 'MISMATCH':
-                                        st.error(f"The image for product '{sku}' is mismatched. Processing stopped.")
+                                        st.markdown(f"<div class='simple-error'>The image for product '{sku}' is mismatched. Processing stopped.</div>", unsafe_allow_html=True)
                                         return
-                                # Description generation logic
                                 if sku and image_file:
                                     description = generator.generate_product_description_with_image(sku, image_name, image_bytes, mime_type=mime_type)
                                     output_df.at[i, 'description'] = description
@@ -249,7 +496,6 @@ def main():
                                     related = generator.find_related_products(sku, output_df['sku'].tolist())
                                     output_df.at[i, 'related_products'] = '|'.join(related)
                                 elif image_file and not sku:
-                                    # Generate description from image only
                                     description = generator.generate_product_description_with_image("", image_name, image_bytes, mime_type=mime_type)
                                     output_df.at[i, 'description'] = description
                                     output_df.at[i, 'related_products'] = ''
@@ -258,26 +504,35 @@ def main():
                                     output_df.at[i, 'related_products'] = ''
                                 output_df.to_csv('enriched_products_with_images.csv', index=False)
                             except Exception as e:
-                                st.error(f"Error processing product {row['sku']}: {str(e)}")
+                                st.markdown(f"<div class='simple-error'>Error processing product {row['sku']}: {str(e)}</div>", unsafe_allow_html=True)
                                 continue
                             time.sleep(30)
-                        # Ensure output columns order
                         output_df = output_df[['sku', 'image_name', 'description', 'related_products']]
                         output_df.to_csv('enriched_products_with_images.csv', index=False)
-                        st.success("Processing completed!")
+                        st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
+                        with open('enriched_products_with_images.csv', 'rb') as f:
+                            st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                            st.download_button(
+                                label="⬇️ Download Results",
+                                data=f,
+                                file_name="enriched_products_with_images.csv",
+                                mime="text/csv"
+                            )
+                            st.markdown("</div>", unsafe_allow_html=True)
                         download_ready = True
                     except Exception as e:
-                        st.error(f"An error occurred during processing: {str(e)}")
+                        st.markdown(f"<div class='simple-error'>An error occurred during processing: {str(e)}</div>", unsafe_allow_html=True)
                         download_ready = False
-            # Always show download button if file exists
             if os.path.exists('enriched_products_with_images.csv'):
                 with open('enriched_products_with_images.csv', 'rb') as f:
+                    st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
                     st.download_button(
-                        label="Download Results",
+                        label="⬇️ Download Results",
                         data=f,
                         file_name="enriched_products_with_images.csv",
                         mime="text/csv"
                     )
+                    st.markdown("</div>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main() 
