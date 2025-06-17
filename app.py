@@ -365,7 +365,8 @@ def main():
                                     label="⬇️ Download Results",
                                     data=f,
                                     file_name="enriched_products.csv",
-                                    mime="text/csv"
+                                    mime="text/csv",
+                                    key="download_sku"
                                 )
                                 st.markdown("</div>", unsafe_allow_html=True)
                             return
@@ -390,7 +391,8 @@ def main():
                                 label="⬇️ Download Results",
                                 data=f,
                                 file_name="enriched_products.csv",
-                                mime="text/csv"
+                                mime="text/csv",
+                                key="download_sku"
                             )
                             st.markdown("</div>", unsafe_allow_html=True)
                     except Exception as e:
@@ -516,7 +518,8 @@ def main():
                                 label="⬇️ Download Results",
                                 data=f,
                                 file_name="enriched_products_with_images.csv",
-                                mime="text/csv"
+                                mime="text/csv",
+                                key="download_image"
                             )
                             st.markdown("</div>", unsafe_allow_html=True)
                         download_ready = True
@@ -530,7 +533,8 @@ def main():
                         label="⬇️ Download Results",
                         data=f,
                         file_name="enriched_products_with_images.csv",
-                        mime="text/csv"
+                        mime="text/csv",
+                        key="download_image"
                     )
                     st.markdown("</div>", unsafe_allow_html=True)
 
