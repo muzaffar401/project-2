@@ -8,6 +8,9 @@ from PIL import Image
 import io
 import google.generativeai as genai
 import datetime
+import json
+import threading
+import queue
 
 # Configure page - must be the first Streamlit command
 st.set_page_config(
@@ -19,6 +22,83 @@ st.set_page_config(
 
 # Load environment variables
 load_dotenv()
+
+# Status file path
+STATUS_FILE = 'processing_status.json'
+
+def save_status(status_data):
+    """Save processing status to file"""
+    with open(STATUS_FILE, 'w') as f:
+        json.dump(status_data, f)
+    # Also save to session state
+    st.session_state['processing_status'] = status_data
+
+def load_status():
+    """Load processing status from file or session state"""
+    if os.path.exists(STATUS_FILE):
+        with open(STATUS_FILE, 'r') as f:
+            return json.load(f)
+    return st.session_state.get('processing_status')
+
+def process_products_background(generator, df, output_file, status_queue):
+    """Background processing function"""
+    try:
+        total_products = len(df)
+        for i, row in df.iterrows():
+            try:
+                # Update status
+                status = {
+                    'current': i + 1,
+                    'total': total_products,
+                    'current_sku': str(row['sku']),
+                    'status': 'processing',
+                    'error': None,
+                    'timestamp': datetime.datetime.now().isoformat()
+                }
+                status_queue.put(status)
+                save_status(status)
+
+                # Process product
+                description = generator.generate_product_description(row['sku'])
+                df.at[i, 'description'] = description
+                related = generator.find_related_products(row['sku'], df['sku'].tolist())
+                df.at[i, 'related_products'] = '|'.join(related)
+                
+                # Save progress
+                df.to_csv(output_file, index=False)
+                time.sleep(30)  # Rate limiting
+            except Exception as e:
+                status = {
+                    'current': i + 1,
+                    'total': total_products,
+                    'current_sku': str(row['sku']),
+                    'status': 'error',
+                    'error': str(e),
+                    'timestamp': datetime.datetime.now().isoformat()
+                }
+                status_queue.put(status)
+                save_status(status)
+                continue
+
+        # Mark as complete
+        final_status = {
+            'current': total_products,
+            'total': total_products,
+            'current_sku': None,
+            'status': 'complete',
+            'error': None,
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+        status_queue.put(final_status)
+        save_status(final_status)
+    except Exception as e:
+        error_status = {
+            'status': 'error',
+            'error': str(e),
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+        status_queue.put(error_status)
+        save_status(error_status)
 
 # Simple, modern, theme-adaptive CSS
 st.markdown("""
@@ -196,6 +276,20 @@ def process_dataframe(df):
     return df, original_count, cleaned_count
 
 def main():
+    # Initialize session state for processing status if not exists
+    if 'processing_status' not in st.session_state:
+        st.session_state['processing_status'] = None
+    
+    # Check for existing processing status
+    current_status = load_status()
+    if current_status and current_status.get('status') == 'processing':
+        st.markdown("""
+            <div class='simple-info'>
+                <b>🔄 Processing in progress...</b><br>
+                Your previous processing session is still active. The progress will continue from where it left off.
+            </div>
+        """, unsafe_allow_html=True)
+    
     st.markdown("""
         <div class='simple-title'>📝 Product Description Generator</div>
         <div class='simple-subtitle'>Transform your product data into compelling descriptions using AI</div>
@@ -371,33 +465,67 @@ def main():
                                 )
                                 st.markdown("</div>", unsafe_allow_html=True)
                             return
-                        for i, (row_idx, row) in enumerate(to_process.iterrows()):
-                            progress = int(((i + 1) / total_to_process) * 100)
-                            progress_bar.progress(progress)
-                            status_text.markdown(f"<span style='color:var(--primary-color);'>Processing product <b>{i + 1}</b> of <b>{total_to_process}</b>: <b>{row['sku']}</b></span>", unsafe_allow_html=True)
+                        
+                        # Initialize status
+                        status_queue = queue.Queue()
+                        initial_status = {
+                            'current': 0,
+                            'total': total_to_process,
+                            'current_sku': None,
+                            'status': 'starting',
+                            'error': None,
+                            'timestamp': datetime.datetime.now().isoformat()
+                        }
+                        save_status(initial_status)
+                        
+                        # Start background processing
+                        thread = threading.Thread(
+                            target=process_products_background,
+                            args=(generator, to_process, 'enriched_products.csv', status_queue)
+                        )
+                        thread.daemon = True
+                        thread.start()
+                        
+                        # Monitor progress
+                        while True:
                             try:
-                                description = generator.generate_product_description(row['sku'])
-                                merged_df.at[row_idx, 'description'] = description
-                                related = generator.find_related_products(row['sku'], merged_df['sku'].tolist())
-                                merged_df.at[row_idx, 'related_products'] = '|'.join(related)
-                                merged_df.to_csv('enriched_products.csv', index=False)
-                            except Exception as e:
-                                st.markdown(f"<div class='simple-error'>Error processing product {row['sku']}: {str(e)}</div>", unsafe_allow_html=True)
+                                status = status_queue.get_nowait()
+                                if status['status'] == 'complete':
+                                    st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
+                                    # Clear processing status
+                                    st.session_state['processing_status'] = None
+                                    if os.path.exists(STATUS_FILE):
+                                        os.remove(STATUS_FILE)
+                                    with open('enriched_products.csv', 'rb') as f:
+                                        st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                                        st.download_button(
+                                            label="⬇️ Download Results",
+                                            data=f,
+                                            file_name="enriched_products.csv",
+                                            mime="text/csv",
+                                            key="download_sku"
+                                        )
+                                        st.markdown("</div>", unsafe_allow_html=True)
+                                    break
+                                elif status['status'] == 'error':
+                                    st.markdown(f"<div class='simple-error'>Error processing product {status['current_sku']}: {status['error']}</div>", unsafe_allow_html=True)
+                                    continue
+                                
+                                progress = int((status['current'] / status['total']) * 100)
+                                progress_bar.progress(progress)
+                                status_text.markdown(
+                                    f"<span style='color:var(--primary-color);'>Processing product <b>{status['current']}</b> of <b>{status['total']}</b>: <b>{status['current_sku']}</b></span>",
+                                    unsafe_allow_html=True
+                                )
+                            except queue.Empty:
+                                time.sleep(1)
                                 continue
-                            time.sleep(30)
-                        st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
-                        with open('enriched_products.csv', 'rb') as f:
-                            st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
-                            st.download_button(
-                                label="⬇️ Download Results",
-                                data=f,
-                                file_name="enriched_products.csv",
-                                mime="text/csv",
-                                key="download_sku"
-                            )
-                            st.markdown("</div>", unsafe_allow_html=True)
                     except Exception as e:
                         st.markdown(f"<div class='simple-error'>An error occurred during processing: {str(e)}</div>", unsafe_allow_html=True)
+                        # Clear processing status on error
+                        st.session_state['processing_status'] = None
+                        if os.path.exists(STATUS_FILE):
+                            os.remove(STATUS_FILE)
         elif scenario == 'sku_image':
             if 'sku' not in df.columns or 'image_name' not in df.columns:
                 st.markdown("<div class='simple-error'>❌ The file must contain both 'sku' and 'image_name' columns!</div>", unsafe_allow_html=True)
