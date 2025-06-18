@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from PIL import Image
 import io
 import google.generativeai as genai
+import datetime
 
 # Configure page - must be the first Streamlit command
 st.set_page_config(
@@ -537,6 +538,30 @@ def main():
                         key="download_image"
                     )
                     st.markdown("</div>", unsafe_allow_html=True)
+
+    # --- Always show download button if output file exists (for user reliability) ---
+    if os.path.exists('enriched_products.csv'):
+        last_modified = datetime.datetime.fromtimestamp(os.path.getmtime('enriched_products.csv')).strftime('%Y-%m-%d %H:%M:%S')
+        st.markdown(f"<div class='styled-download'><b>✅ A completed results file was found (last updated: {last_modified}).</b><br>You can download it below:</div>", unsafe_allow_html=True)
+        with open('enriched_products.csv', 'rb') as f:
+            st.download_button(
+                label="⬇️ Download Results (SKU Only)",
+                data=f,
+                file_name="enriched_products.csv",
+                mime="text/csv",
+                key="download_sku_always"
+            )
+    if os.path.exists('enriched_products_with_images.csv'):
+        last_modified = datetime.datetime.fromtimestamp(os.path.getmtime('enriched_products_with_images.csv')).strftime('%Y-%m-%d %H:%M:%S')
+        st.markdown(f"<div class='styled-download'><b>✅ A completed results file with images was found (last updated: {last_modified}).</b><br>You can download it below:</div>", unsafe_allow_html=True)
+        with open('enriched_products_with_images.csv', 'rb') as f:
+            st.download_button(
+                label="⬇️ Download Results (With Images)",
+                data=f,
+                file_name="enriched_products_with_images.csv",
+                mime="text/csv",
+                key="download_image_always"
+            )
 
 if __name__ == "__main__":
     main() 
