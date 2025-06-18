@@ -393,7 +393,7 @@ def main():
         
         # Auto-refresh the page
         time.sleep(5)
-        st.experimental_rerun()
+        st.rerun()
 
     # Centered layout with two simple cards
     col1, col2 = st.columns([1, 2], gap="large")
@@ -628,13 +628,13 @@ def main():
                                 
                                 # Auto-refresh the page every 5 seconds
                                 time.sleep(5)
-                                st.experimental_rerun()
+                                st.rerun()
                                 
                             except queue.Empty:
                                 # Check if processing is still running
                                 current_status = load_status()
                                 if current_status and current_status['status'] == 'complete':
-                                    st.experimental_rerun()
+                                    st.rerun()
                                 time.sleep(1)
                                 continue
                                 
