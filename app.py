@@ -164,6 +164,94 @@ def process_products_background(generator, df, output_file, status_queue):
         status_queue.put(error_status)
         save_status(error_status)
 
+def process_products_with_images_background(generator, df, uploaded_images, output_file, status_queue):
+    """Background processing function for products with images"""
+    try:
+        total_products = len(df)
+        processed_count = 0
+        image_file_map = {img.name: img for img in uploaded_images}
+        
+        for i, row in df.iterrows():
+            try:
+                # Update status
+                status = {
+                    'current': i + 1,
+                    'total': total_products,
+                    'current_sku': str(row['sku']),
+                    'status': 'processing',
+                    'error': None,
+                    'last_updated': datetime.datetime.now().isoformat()
+                }
+                status_queue.put(status)
+                save_status(status)
+
+                # Process product
+                sku = str(row['sku']) if pd.notna(row['sku']) and row['sku'] != '' else None
+                image_name = str(row['image_name']) if pd.notna(row['image_name']) and row['image_name'] != '' else None
+                image_file = image_file_map.get(image_name) if image_name else None
+                
+                if image_file:
+                    image_bytes = image_file.read()
+                    image_file.seek(0)
+                    img = Image.open(io.BytesIO(image_bytes))
+                    mime_type = Image.MIME[img.format]
+                    
+                    if sku:
+                        description = generator.generate_product_description_with_image(sku, image_name, image_bytes, mime_type=mime_type)
+                        df.at[i, 'description'] = description
+                        related = generator.find_related_products(sku, df['sku'].tolist())
+                        df.at[i, 'related_products'] = '|'.join(related)
+                    else:
+                        description = generator.generate_product_description_with_image("", image_name, image_bytes, mime_type=mime_type)
+                        df.at[i, 'description'] = description
+                        df.at[i, 'related_products'] = ''
+                elif sku:
+                    description = generator.generate_product_description(sku)
+                    df.at[i, 'description'] = description
+                    related = generator.find_related_products(sku, df['sku'].tolist())
+                    df.at[i, 'related_products'] = '|'.join(related)
+                else:
+                    df.at[i, 'description'] = 'No SKU or image.'
+                    df.at[i, 'related_products'] = ''
+                
+                # Save progress
+                save_progress(df, output_file)
+                time.sleep(30)  # Rate limiting
+                
+            except Exception as e:
+                status = {
+                    'current': i + 1,
+                    'total': total_products,
+                    'current_sku': str(row['sku']),
+                    'status': 'error',
+                    'error': str(e),
+                    'last_updated': datetime.datetime.now().isoformat()
+                }
+                status_queue.put(status)
+                save_status(status)
+                continue
+
+        # Mark as complete
+        final_status = {
+            'current': total_products,
+            'total': total_products,
+            'current_sku': None,
+            'status': 'complete',
+            'error': None,
+            'last_updated': datetime.datetime.now().isoformat()
+        }
+        status_queue.put(final_status)
+        save_status(final_status)
+        
+    except Exception as e:
+        error_status = {
+            'status': 'error',
+            'error': str(e),
+            'last_updated': datetime.datetime.now().isoformat()
+        }
+        status_queue.put(error_status)
+        save_status(error_status)
+
 def check_processing_state():
     """Check if there's an ongoing processing task and restore its state"""
     status = load_status()
@@ -185,7 +273,10 @@ def reset_all_data():
         'enriched_products.csv',
         'enriched_products_with_images.csv',
         'processing_status.json',
-        'processing_progress.csv'
+        'processing_progress.csv',
+        'enriched_products.csv.tmp',
+        'enriched_products_with_images.csv.tmp',
+        'processing_status.json.tmp'
     ]
     
     for file_path in files_to_remove:
@@ -643,7 +734,7 @@ def main():
                                             key="download_sku"
                                         )
                                         st.markdown("</div>", unsafe_allow_html=True)
-                                    break
+                                    return
                                 elif status['status'] == 'error':
                                     error_placeholder.markdown(
                                         f"<div class='simple-error'>Error processing product {status['current_sku']}: {status['error']}</div>",
@@ -724,80 +815,115 @@ def main():
                         OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
                         use_openai = bool(OPENAI_API_KEY) and not bool(GEMINI_API_KEY)
                         generator = ProductDescriptionGenerator(use_openai=use_openai)
-                        output_df = cleaned_df.copy()
-                        output_df['description'] = ''
-                        output_df['related_products'] = ''
-                        image_file_map = {img.name: img for img in uploaded_images}
-                        for i, row in output_df.iterrows():
-                            progress = int(((i + 1) / total_products) * 100)
-                            progress_bar.progress(progress)
-                            status_text.markdown(f"<span style='color:var(--primary-color);'>Processing product <b>{i + 1}</b> of <b>{total_products}</b>: <b>{row['sku']}</b></span>", unsafe_allow_html=True)
+                        
+                        # Load or initialize progress
+                        if os.path.exists('enriched_products_with_images.csv'):
+                            enriched_df = pd.read_csv('enriched_products_with_images.csv')
+                            for col in ['sku', 'image_name', 'description', 'related_products']:
+                                if col not in enriched_df.columns:
+                                    enriched_df[col] = ''
+                            merged_df = pd.merge(cleaned_df, enriched_df, on='sku', how='left', suffixes=('', '_enriched'))
+                            if 'description_enriched' not in merged_df.columns:
+                                merged_df['description_enriched'] = ''
+                            if 'related_products_enriched' not in merged_df.columns:
+                                merged_df['related_products_enriched'] = ''
+                            merged_df['description'] = merged_df['description_enriched'].combine_first(merged_df['description'])
+                            merged_df['related_products'] = merged_df['related_products_enriched'].combine_first(merged_df['related_products'])
+                            merged_df = merged_df[['sku', 'image_name', 'description', 'related_products']]
+                        else:
+                            merged_df = cleaned_df.copy()
+                            merged_df['description'] = ''
+                            merged_df['related_products'] = ''
+                        
+                        # Find products that need processing
+                        to_process = merged_df[
+                            (merged_df['description'].isna()) | (merged_df['description'] == '') |
+                            (merged_df['description'] == 'Description generation failed.') |
+                            (merged_df['related_products'].isna()) | (merged_df['related_products'] == '')
+                        ]
+                        total_to_process = len(to_process)
+                        
+                        if total_to_process == 0:
+                            st.markdown("<div class='simple-info'>All products have already been processed!</div>", unsafe_allow_html=True)
+                            with open('enriched_products_with_images.csv', 'rb') as f:
+                                st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                                st.download_button(
+                                    label="⬇️ Download Results",
+                                    data=f,
+                                    file_name="enriched_products_with_images.csv",
+                                    mime="text/csv",
+                                    key="download_image"
+                                )
+                                st.markdown("</div>", unsafe_allow_html=True)
+                            return
+                        
+                        # Initialize status
+                        status_queue = queue.Queue()
+                        initial_status = {
+                            'current': 0,
+                            'total': total_to_process,
+                            'current_sku': None,
+                            'status': 'starting',
+                            'error': None,
+                            'last_updated': datetime.datetime.now().isoformat()
+                        }
+                        save_status(initial_status)
+                        
+                        # Start background processing
+                        thread = threading.Thread(
+                            target=process_products_with_images_background,
+                            args=(generator, to_process, uploaded_images, 'enriched_products_with_images.csv', status_queue)
+                        )
+                        thread.daemon = True
+                        thread.start()
+                        
+                        # Monitor progress with auto-refresh
+                        progress_placeholder = st.empty()
+                        status_placeholder = st.empty()
+                        error_placeholder = st.empty()
+                        
+                        while True:
                             try:
-                                sku = str(row['sku']) if pd.notna(row['sku']) and row['sku'] != '' else None
-                                image_name = str(row['image_name']) if pd.notna(row['image_name']) and row['image_name'] != '' else None
-                                image_file = image_file_map.get(image_name) if image_name else None
-                                image_bytes = image_file.read() if image_file else None
-                                if image_file:
-                                    image_file.seek(0)
-                                    try:
-                                        img = Image.open(io.BytesIO(image_bytes))
-                                        img.verify()
-                                    except Exception as img_e:
-                                        st.markdown(f"<div class='simple-error'>Image {image_name} is not a valid image: {img_e}</div>", unsafe_allow_html=True)
-                                        output_df.at[i, 'description'] = 'Image invalid.'
-                                        output_df.at[i, 'related_products'] = ''
-                                        continue
-                                if sku and image_file:
-                                    img = Image.open(io.BytesIO(image_bytes))
-                                    mime_type = Image.MIME[img.format]
-                                    mismatch_prompt = (
-                                        f"Is the product in this image related to the SKU '{sku}'? "
-                                        "If the image is completely unrelated (e.g., SKU is a food item but the image is a shoe), respond ONLY with 'MISMATCH'. "
-                                        "If the image matches or is related, respond ONLY with 'OK'. Do not add any other text."
+                                status = status_queue.get_nowait()
+                                if status['status'] == 'complete':
+                                    st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
+                                    with open('enriched_products_with_images.csv', 'rb') as f:
+                                        st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                                        st.download_button(
+                                            label="⬇️ Download Results",
+                                            data=f,
+                                            file_name="enriched_products_with_images.csv",
+                                            mime="text/csv",
+                                            key="download_image"
+                                        )
+                                        st.markdown("</div>", unsafe_allow_html=True)
+                                    break
+                                elif status['status'] == 'error':
+                                    error_placeholder.markdown(
+                                        f"<div class='simple-error'>Error processing product {status['current_sku']}: {status['error']}</div>",
+                                        unsafe_allow_html=True
                                     )
-                                    if not generator.use_openai:
-                                        mismatch_result = generator._make_api_call(mismatch_prompt, image_bytes=image_bytes, mime_type=mime_type)
-                                    else:
-                                        mismatch_result = "OK"
-                                    if mismatch_result.strip().upper() == 'MISMATCH':
-                                        st.markdown(f"<div class='simple-error'>The image for product '{sku}' is mismatched. Processing stopped.</div>", unsafe_allow_html=True)
-                                        return
-                                if sku and image_file:
-                                    description = generator.generate_product_description_with_image(sku, image_name, image_bytes, mime_type=mime_type)
-                                    output_df.at[i, 'description'] = description
-                                    related = generator.find_related_products(sku, output_df['sku'].tolist())
-                                    output_df.at[i, 'related_products'] = '|'.join(related)
-                                elif sku and not image_file:
-                                    description = generator.generate_product_description(sku)
-                                    output_df.at[i, 'description'] = description
-                                    related = generator.find_related_products(sku, output_df['sku'].tolist())
-                                    output_df.at[i, 'related_products'] = '|'.join(related)
-                                elif image_file and not sku:
-                                    description = generator.generate_product_description_with_image("", image_name, image_bytes, mime_type=mime_type)
-                                    output_df.at[i, 'description'] = description
-                                    output_df.at[i, 'related_products'] = ''
-                                else:
-                                    output_df.at[i, 'description'] = 'No SKU or image.'
-                                    output_df.at[i, 'related_products'] = ''
-                                output_df.to_csv('enriched_products_with_images.csv', index=False)
-                            except Exception as e:
-                                st.markdown(f"<div class='simple-error'>Error processing product {row['sku']}: {str(e)}</div>", unsafe_allow_html=True)
+                                    continue
+                                
+                                progress = int((status['current'] / status['total']) * 100)
+                                progress_placeholder.progress(progress)
+                                status_placeholder.markdown(
+                                    f"<span style='color:var(--primary-color);'>Processing product <b>{status['current']}</b> of <b>{status['total']}</b>: <b>{status['current_sku']}</b></span>",
+                                    unsafe_allow_html=True
+                                )
+                                
+                                # Auto-refresh the page every 5 seconds
+                                time.sleep(5)
+                                st.rerun()
+                                
+                            except queue.Empty:
+                                # Check if processing is still running
+                                current_status = load_status()
+                                if current_status and current_status['status'] == 'complete':
+                                    st.rerun()
+                                time.sleep(1)
                                 continue
-                            time.sleep(30)
-                        output_df = output_df[['sku', 'image_name', 'description', 'related_products']]
-                        output_df.to_csv('enriched_products_with_images.csv', index=False)
-                        st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
-                        with open('enriched_products_with_images.csv', 'rb') as f:
-                            st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
-                            st.download_button(
-                                label="⬇️ Download Results",
-                                data=f,
-                                file_name="enriched_products_with_images.csv",
-                                mime="text/csv",
-                                key="download_image"
-                            )
-                            st.markdown("</div>", unsafe_allow_html=True)
-                        download_ready = True
+                                
                     except Exception as e:
                         st.markdown(f"<div class='simple-error'>An error occurred during processing: {str(e)}</div>", unsafe_allow_html=True)
                         download_ready = False
