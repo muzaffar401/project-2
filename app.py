@@ -171,11 +171,11 @@ def process_products_with_images_background(generator, df, uploaded_images, outp
         total_products = len(df)
         processed_count = 0
         
-        # Create image file mapping without extensions
-        image_file_map = {}
+        # Create a mapping of image names without extensions to actual uploaded files
+        image_name_mapping = {}
         for img in uploaded_images:
             base_name = os.path.splitext(img.name)[0]
-            image_file_map[base_name] = img
+            image_name_mapping[base_name] = img
         
         for i, row in df.iterrows():
             try:
@@ -194,7 +194,7 @@ def process_products_with_images_background(generator, df, uploaded_images, outp
                 # Process product
                 sku = str(row['sku']) if pd.notna(row['sku']) and row['sku'] != '' else None
                 image_name = str(row['image_name']) if pd.notna(row['image_name']) and row['image_name'] != '' else None
-                image_file = image_file_map.get(image_name) if image_name else None
+                image_file = image_name_mapping.get(image_name) if image_name else None
                 
                 if image_file:
                     image_bytes = image_file.read()
@@ -805,16 +805,18 @@ def main():
             # Create a mapping of image names without extensions to actual uploaded files
             image_name_mapping = {}
             for img in uploaded_images:
-                # Get base name without extension
                 base_name = os.path.splitext(img.name)[0]
                 image_name_mapping[base_name] = img
-            
-            # Check for missing images (comparing base names without extensions)
-            image_name_set = set(df['image_name'].astype(str))
-            uploaded_image_bases = set(image_name_mapping.keys())
-            missing_images = image_name_set - uploaded_image_bases
-            
-            st.markdown(f"<div class='simple-info'>Total products: <b>{len(df)}</b><br>Total images uploaded: <b>{len(uploaded_images)}</b><br>Image matching: <b>{len(image_name_set)}</b> required, <b>{len(uploaded_image_bases)}</b> found</div>", unsafe_allow_html=True)
+
+            # Only check for missing images for rows where image_name is present and not blank/NaN
+            if 'image_name' in df.columns:
+                image_name_set = set(str(x) for x in df['image_name'] if pd.notna(x) and str(x).strip() != '')
+                uploaded_image_bases = set(image_name_mapping.keys())
+                missing_images = image_name_set - uploaded_image_bases
+            else:
+                missing_images = set()
+
+            st.markdown(f"<div class='simple-info'>Total products: <b>{len(df)}</b><br>Total images uploaded: <b>{len(uploaded_images)}</b>" + (f"<br>Image matching: <b>{len(image_name_set)}</b> required, <b>{len(uploaded_image_bases)}</b> found" if 'image_name' in df.columns else "") + "</div>", unsafe_allow_html=True)
             if missing_images:
                 st.markdown(f"<div class='simple-error'>The following images are missing in the uploaded files: {', '.join(missing_images)}</div>", unsafe_allow_html=True)
                 return
@@ -862,18 +864,20 @@ def main():
                             for col in ['sku', 'image_name', 'description', 'related_products']:
                                 if col not in enriched_df.columns:
                                     enriched_df[col] = ''
-                            merged_df = pd.merge(cleaned_df, enriched_df, on='sku', how='left', suffixes=('', '_enriched'))
+                            merged_df = pd.merge(cleaned_df, enriched_df, on=['sku', 'image_name'] if 'image_name' in cleaned_df.columns else ['sku'], how='left', suffixes=('', '_enriched'))
                             if 'description_enriched' not in merged_df.columns:
                                 merged_df['description_enriched'] = ''
                             if 'related_products_enriched' not in merged_df.columns:
                                 merged_df['related_products_enriched'] = ''
                             merged_df['description'] = merged_df['description_enriched'].combine_first(merged_df['description'])
                             merged_df['related_products'] = merged_df['related_products_enriched'].combine_first(merged_df['related_products'])
-                            merged_df = merged_df[['sku', 'image_name', 'description', 'related_products']]
+                            merged_df = merged_df[[col for col in ['sku', 'image_name', 'description', 'related_products'] if col in merged_df.columns]]
                         else:
                             merged_df = cleaned_df.copy()
-                            merged_df['description'] = ''
-                            merged_df['related_products'] = ''
+                            if 'description' not in merged_df.columns:
+                                merged_df['description'] = ''
+                            if 'related_products' not in merged_df.columns:
+                                merged_df['related_products'] = ''
                         
                         # Find products that need processing
                         to_process = merged_df[
@@ -910,18 +914,87 @@ def main():
                         save_status(initial_status)
                         
                         # Start background processing
+                        def process_flexible_rows(generator, df, image_name_mapping, output_file, status_queue):
+                            try:
+                                total_products = len(df)
+                                for i, row in df.iterrows():
+                                    try:
+                                        sku = str(row['sku']) if 'sku' in df.columns and pd.notna(row.get('sku', None)) and str(row.get('sku', '')).strip() != '' else None
+                                        image_name = str(row['image_name']) if 'image_name' in df.columns and pd.notna(row.get('image_name', None)) and str(row.get('image_name', '')).strip() != '' else None
+                                        image_file = image_name_mapping.get(image_name) if image_name else None
+                                        status = {
+                                            'current': i + 1,
+                                            'total': total_products,
+                                            'current_sku': sku or image_name or '',
+                                            'status': 'processing',
+                                            'error': None,
+                                            'last_updated': datetime.datetime.now().isoformat()
+                                        }
+                                        status_queue.put(status)
+                                        save_status(status)
+                                        if sku and image_file:
+                                            img = Image.open(io.BytesIO(image_file.read()))
+                                            mime_type = Image.MIME[img.format]
+                                            description = generator.generate_product_description_with_image(sku, image_name, image_file.read(), mime_type=mime_type)
+                                            df.at[i, 'description'] = description
+                                            related = generator.find_related_products(sku, df['sku'].tolist())
+                                            df.at[i, 'related_products'] = ' | '.join(related)
+                                        elif sku and not image_file:
+                                            description = generator.generate_product_description(sku)
+                                            df.at[i, 'description'] = description
+                                            related = generator.find_related_products(sku, df['sku'].tolist())
+                                            df.at[i, 'related_products'] = ' | '.join(related)
+                                        elif image_file and not sku:
+                                            img = Image.open(io.BytesIO(image_file.read()))
+                                            mime_type = Image.MIME[img.format]
+                                            description = generator.generate_product_description_with_image("", image_name, image_file.read(), mime_type=mime_type)
+                                            df.at[i, 'description'] = description
+                                            df.at[i, 'related_products'] = ''
+                                        else:
+                                            df.at[i, 'description'] = 'No SKU or image.'
+                                            df.at[i, 'related_products'] = ''
+                                        save_progress(df, output_file)
+                                        time.sleep(30)
+                                    except Exception as e:
+                                        status = {
+                                            'current': i + 1,
+                                            'total': total_products,
+                                            'current_sku': sku or image_name or '',
+                                            'status': 'error',
+                                            'error': str(e),
+                                            'last_updated': datetime.datetime.now().isoformat()
+                                        }
+                                        status_queue.put(status)
+                                        save_status(status)
+                                        continue
+                                final_status = {
+                                    'current': total_products,
+                                    'total': total_products,
+                                    'current_sku': None,
+                                    'status': 'complete',
+                                    'error': None,
+                                    'last_updated': datetime.datetime.now().isoformat()
+                                }
+                                status_queue.put(final_status)
+                                save_status(final_status)
+                            except Exception as e:
+                                error_status = {
+                                    'status': 'error',
+                                    'error': str(e),
+                                    'last_updated': datetime.datetime.now().isoformat()
+                                }
+                                status_queue.put(error_status)
+                                save_status(error_status)
                         thread = threading.Thread(
-                            target=process_products_with_images_background,
-                            args=(generator, to_process, uploaded_images, 'enriched_products_with_images.csv', status_queue)
+                            target=process_flexible_rows,
+                            args=(generator, to_process, image_name_mapping, 'enriched_products_with_images.csv', status_queue)
                         )
                         thread.daemon = True
                         thread.start()
-                        
                         # Monitor progress with auto-refresh
                         progress_placeholder = st.empty()
                         status_placeholder = st.empty()
                         error_placeholder = st.empty()
-                        
                         while True:
                             try:
                                 status = status_queue.get_nowait()
@@ -944,26 +1017,20 @@ def main():
                                         unsafe_allow_html=True
                                     )
                                     continue
-                                
                                 progress = int((status['current'] / status['total']) * 100)
                                 progress_placeholder.progress(progress)
                                 status_placeholder.markdown(
                                     f"<span style='color:var(--primary-color);'>Processing product <b>{status['current']}</b> of <b>{status['total']}</b>: <b>{status['current_sku']}</b></span>",
                                     unsafe_allow_html=True
                                 )
-                                
-                                # Auto-refresh the page every 5 seconds
                                 time.sleep(5)
                                 st.rerun()
-                                
                             except queue.Empty:
-                                # Check if processing is still running
                                 current_status = load_status()
                                 if current_status and current_status['status'] == 'complete':
                                     st.rerun()
                                 time.sleep(1)
                                 continue
-                                
                     except Exception as e:
                         st.markdown(f"<div class='simple-error'>An error occurred during processing: {str(e)}</div>", unsafe_allow_html=True)
                         download_ready = False

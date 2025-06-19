@@ -197,7 +197,7 @@ class ProductDescriptionGenerator:
         3. Brand relationships
         4. Complementary items
         
-        CRITICAL: Return only the 3 product names, separated by '|'. Do not include any special characters, quotes, or additional text.
+        CRITICAL: Return only the 3 product names, separated by '|'.
         """
         
         try:
