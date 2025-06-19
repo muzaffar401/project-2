@@ -11,6 +11,7 @@ import datetime
 import json
 import threading
 import queue
+import zipfile
 
 # Configure page - must be the first Streamlit command
 st.set_page_config(
@@ -112,7 +113,7 @@ def process_products_background(generator, df, output_file, status_queue):
                         if description and description != "Description generation failed.":
                             df.at[i, 'description'] = description
                             related = generator.find_related_products(row['sku'], df['sku'].tolist())
-                            df.at[i, 'related_products'] = '|'.join(related)
+                            df.at[i, 'related_products'] = ' | '.join(related)
                             break
                         elif retry < max_retries - 1:
                             time.sleep(30 * (retry + 1))  # Exponential backoff
@@ -202,10 +203,31 @@ def process_products_with_images_background(generator, df, uploaded_images, outp
                     mime_type = Image.MIME[img.format]
                     
                     if sku:
+                        mismatch_prompt = (
+                            f"Is the product in this image related to the SKU '{sku}'? "
+                            "If the image is completely unrelated (e.g., SKU is a food item but the image is a shoe), respond ONLY with 'MISMATCH'. "
+                            "If the image matches or is related, respond ONLY with 'OK'. Do not add any other text."
+                        )
+                        if not generator.use_openai:
+                            mismatch_result = generator._make_api_call(mismatch_prompt, image_bytes=image_bytes, mime_type=mime_type)
+                        else:
+                            mismatch_result = "OK"
+                        if mismatch_result.strip().upper() == 'MISMATCH':
+                            status = {
+                                'current': i + 1,
+                                'total': total_products,
+                                'current_sku': str(row['sku']),
+                                'status': 'error',
+                                'error': f"Image for SKU '{sku}' is mismatched. Processing stopped.",
+                                'last_updated': datetime.datetime.now().isoformat()
+                            }
+                            status_queue.put(status)
+                            save_status(status)
+                            return  # Stop processing on mismatch
                         description = generator.generate_product_description_with_image(sku, image_name, image_bytes, mime_type=mime_type)
                         df.at[i, 'description'] = description
                         related = generator.find_related_products(sku, df['sku'].tolist())
-                        df.at[i, 'related_products'] = '|'.join(related)
+                        df.at[i, 'related_products'] = ' | '.join(related)
                     else:
                         description = generator.generate_product_description_with_image("", image_name, image_bytes, mime_type=mime_type)
                         df.at[i, 'description'] = description
@@ -214,7 +236,7 @@ def process_products_with_images_background(generator, df, uploaded_images, outp
                     description = generator.generate_product_description(sku)
                     df.at[i, 'description'] = description
                     related = generator.find_related_products(sku, df['sku'].tolist())
-                    df.at[i, 'related_products'] = '|'.join(related)
+                    df.at[i, 'related_products'] = ' | '.join(related)
                 else:
                     df.at[i, 'description'] = 'No SKU or image.'
                     df.at[i, 'related_products'] = ''
@@ -589,10 +611,13 @@ def main():
                 "Upload Product Images",
                 type=["jpg", "jpeg", "png", "webp", "bmp"],
                 accept_multiple_files=True,
-                help="Upload all product images",
+                help="Upload all product images (no ZIP support)",
                 key="img_files",
                 label_visibility="collapsed"
             )
+            # Do not show image names below the uploader anymore
+            # Use uploaded_images for further processing
+            st.session_state['uploaded_images'] = uploaded_images
             st.markdown("</div>", unsafe_allow_html=True)
             if uploaded_file is not None:
                 try:

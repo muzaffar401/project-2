@@ -206,8 +206,8 @@ class ProductDescriptionGenerator:
                 return []
             # Clean the response to remove any special characters
             response = re.sub(r'[^a-zA-Z0-9\s|]', '', response)
-            related = response.split('|')
-            return [p.strip() for p in related[:3] if p.strip()]
+            related = [p.strip() for p in response.split('|') if p.strip()]
+            return related[:3]
         except Exception as e:
             print(f"Error finding related products for {product_name}: {str(e)}")
             return []

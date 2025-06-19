@@ -1,1 +1,1 @@
-{"current": 0, "total": 10, "current_sku": null, "status": "starting", "error": null, "last_updated": "2025-06-18T16:09:43.942871"}
+{"current": 3, "total": 10, "current_sku": "BAISAN_HALF_1_2KG", "status": "error", "error": "Image for SKU 'BAISAN_HALF_1_2KG' is mismatched. Processing stopped.", "last_updated": "2025-06-19T08:43:23.983998"}
