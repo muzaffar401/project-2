@@ -179,6 +179,30 @@ def check_processing_state():
         return status
     return None
 
+def reset_all_data():
+    """Reset all data files and clear history"""
+    files_to_remove = [
+        'enriched_products.csv',
+        'enriched_products_with_images.csv',
+        'processing_status.json',
+        'processing_progress.csv'
+    ]
+    
+    for file_path in files_to_remove:
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            print(f"Error removing {file_path}: {str(e)}")
+    
+    # Clear session state
+    if 'df' in st.session_state:
+        del st.session_state['df']
+    if 'scenario' in st.session_state:
+        del st.session_state['scenario']
+    if 'uploaded_images' in st.session_state:
+        del st.session_state['uploaded_images']
+
 # Simple, modern, theme-adaptive CSS
 st.markdown("""
     <style>
@@ -359,6 +383,14 @@ def main():
         <div class='simple-title'>📝 Product Description Generator</div>
         <div class='simple-subtitle'>Transform your product data into compelling descriptions using AI</div>
     """, unsafe_allow_html=True)
+
+    # Add reset button in the top right
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col3:
+        if st.button("🔄 Reset All Data", type="secondary", help="Clear all processed files and start fresh"):
+            reset_all_data()
+            st.success("✅ All data has been reset! Please refresh the page.")
+            st.rerun()
 
     # Check for ongoing processing
     processing_state = check_processing_state()
