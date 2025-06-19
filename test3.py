@@ -169,12 +169,7 @@ def process_products_with_images_background(generator, df, uploaded_images, outp
     try:
         total_products = len(df)
         processed_count = 0
-        
-        # Create image file mapping without extensions
-        image_file_map = {}
-        for img in uploaded_images:
-            base_name = os.path.splitext(img.name)[0]
-            image_file_map[base_name] = img
+        image_file_map = {img.name: img for img in uploaded_images}
         
         for i, row in df.iterrows():
             try:
@@ -776,20 +771,10 @@ def main():
             if not uploaded_images or len(uploaded_images) == 0:
                 st.markdown("<div class='simple-info'>Please upload all product images before starting processing.</div>", unsafe_allow_html=True)
                 return
-            
-            # Create a mapping of image names without extensions to actual uploaded files
-            image_name_mapping = {}
-            for img in uploaded_images:
-                # Get base name without extension
-                base_name = os.path.splitext(img.name)[0]
-                image_name_mapping[base_name] = img
-            
-            # Check for missing images (comparing base names without extensions)
             image_name_set = set(df['image_name'].astype(str))
-            uploaded_image_bases = set(image_name_mapping.keys())
-            missing_images = image_name_set - uploaded_image_bases
-            
-            st.markdown(f"<div class='simple-info'>Total products: <b>{len(df)}</b><br>Total images uploaded: <b>{len(uploaded_images)}</b><br>Image matching: <b>{len(image_name_set)}</b> required, <b>{len(uploaded_image_bases)}</b> found</div>", unsafe_allow_html=True)
+            uploaded_image_names = set([img.name for img in uploaded_images])
+            missing_images = image_name_set - uploaded_image_names
+            st.markdown(f"<div class='simple-info'>Total products: <b>{len(df)}</b><br>Total images uploaded: <b>{len(uploaded_images)}</b></div>", unsafe_allow_html=True)
             if missing_images:
                 st.markdown(f"<div class='simple-error'>The following images are missing in the uploaded files: {', '.join(missing_images)}</div>", unsafe_allow_html=True)
                 return

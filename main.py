@@ -91,18 +91,19 @@ class ProductDescriptionGenerator:
         prompt = f"""
         Create a detailed, complete, and well-structured product description for the following product: {product_name}
         
-        Requirements:
-        - The description must be at least 1000 characters and should not be cut off or incomplete. If you need to, add more relevant details to reach this length.
-        - The description MUST be in 2 or 3 well-structured paragraphs, each separated by TWO newlines (\n\n). Do NOT write a single paragraph or a single line.
-        - Each paragraph should focus on different aspects (e.g., features, benefits, usage, quality, value, customer experience).
-        - Only use standard punctuation. No special characters or formatting.
-        - Avoid extra spaces and ensure natural, readable English.
-        - Include key features, benefits, and usage information.
-        - Focus on quality, value, and customer benefits.
-        - Do not repeat phrases. Do not add ellipsis at the end.
-        - End with a complete sentence and ensure the description is not abruptly cut off.
-        - Do not add any other text or comments.
-        - If you reach the end and the description is not yet 1000 characters, add more relevant details until it is complete.
+        CRITICAL REQUIREMENTS:
+        - ABSOLUTELY NO special characters allowed (no @, #, $, %, ^, &, *, (, ), -, _, +, =, [, ], {{, }}, |, \\, :, ;, ", ', <, >, ?, /, ~, `, etc.)
+        - Use ONLY letters (a-z, A-Z), numbers (0-9), spaces, periods (.), commas (,), exclamation marks (!), and question marks (?)
+        - The description must be at least 1000 characters and should not be cut off or incomplete
+        - The description MUST be in 2 or 3 well-structured paragraphs, each separated by TWO newlines (\n\n)
+        - Each paragraph should focus on different aspects (e.g., features, benefits, usage, quality, value, customer experience)
+        - Avoid extra spaces and ensure natural, readable English
+        - Include key features, benefits, and usage information
+        - Focus on quality, value, and customer benefits
+        - Do not repeat phrases
+        - End with a complete sentence
+        - Do not add any other text or comments
+        - If you reach the end and the description is not yet 1000 characters, add more relevant details until it is complete
         """
         try:
             description = self._make_api_call(prompt)
@@ -121,19 +122,20 @@ class ProductDescriptionGenerator:
         Create a detailed, complete, and well-structured product description for the following product SKU: {product_name}.
         The product image file name is: {image_name}.
         
-        Requirements:
-        - Analyze the product image (if available) and use any visible features, colors, packaging, or branding to enhance the description.
-        - The description must be at least 1000 characters and should not be cut off or incomplete. If you need to, add more relevant details to reach this length.
-        - The description MUST be in 2 or 3 well-structured paragraphs, each separated by TWO newlines (\n\n). Do NOT write a single paragraph or a single line.
-        - Each paragraph should focus on different aspects (e.g., features, benefits, usage, quality, value, customer experience).
-        - Only use standard punctuation. No special characters or formatting.
-        - Avoid extra spaces and ensure natural, readable English.
-        - Include key features, benefits, and usage information.
-        - Focus on quality, value, and customer benefits.
-        - Do not repeat phrases. Do not add ellipsis at the end.
-        - End with a complete sentence and ensure the description is not abruptly cut off.
-        - Do not add any other text or comments.
-        - If you reach the end and the description is not yet 1000 characters, add more relevant details until it is complete.
+        CRITICAL REQUIREMENTS:
+        - ABSOLUTELY NO special characters allowed (no @, #, $, %, ^, &, *, (, ), -, _, +, =, [, ], {{, }}, |, \\, :, ;, ", ', <, >, ?, /, ~, `, etc.)
+        - Use ONLY letters (a-z, A-Z), numbers (0-9), spaces, periods (.), commas (,), exclamation marks (!), and question marks (?)
+        - Analyze the product image (if available) and use any visible features, colors, packaging, or branding to enhance the description
+        - The description must be at least 1000 characters and should not be cut off or incomplete
+        - The description MUST be in 2 or 3 well-structured paragraphs, each separated by TWO newlines (\n\n)
+        - Each paragraph should focus on different aspects (e.g., features, benefits, usage, quality, value, customer experience)
+        - Avoid extra spaces and ensure natural, readable English
+        - Include key features, benefits, and usage information
+        - Focus on quality, value, and customer benefits
+        - Do not repeat phrases
+        - End with a complete sentence
+        - Do not add any other text or comments
+        - If you reach the end and the description is not yet 1000 characters, add more relevant details until it is complete
         """
         try:
             description = self._make_api_call(prompt, image_bytes=image_bytes, mime_type=mime_type)
@@ -146,19 +148,27 @@ class ProductDescriptionGenerator:
             return "Description generation failed."
 
     def _clean_description(self, description: str) -> str:
-        # 1. Remove all characters except letters, numbers, spaces, and . , ! ? -
-        description = re.sub(r'[^\w\s.,!?-]', '', description)
+        """Clean description by removing special characters and ensuring proper formatting"""
+        # 1. Remove ALL special characters except allowed ones
+        # Only allow: letters, numbers, spaces, periods, commas, exclamation marks, question marks, and newlines
+        description = re.sub(r'[^a-zA-Z0-9\s.,!?\n]', '', description)
+        
         # 2. Remove spaces before punctuation
-        description = re.sub(r'\s+([.,!?-])', r'\1', description)
+        description = re.sub(r'\s+([.,!?])', r'\1', description)
+        
         # 3. Collapse multiple spaces/tabs but preserve newlines
         description = re.sub(r'[ \t]+', ' ', description)
+        
         # 4. Remove extra spaces at the start/end of each line
         description = '\n'.join(line.strip() for line in description.splitlines())
+        
         # 5. Ensure double newlines between paragraphs (replace 2+ newlines with exactly 2)
         description = re.sub(r'(\n\s*){2,}', '\n\n', description)
+        
         # 6. Remove extra spaces at the start/end of the whole description
         description = description.strip()
-        # Ensure at least 1000 characters, but do not cut off sentences
+        
+        # 7. Ensure at least 1000 characters, but do not cut off sentences
         if len(description) > 1000:
             last_period = description.rfind('.', 0, 1000)
             if last_period != -1:
@@ -166,7 +176,12 @@ class ProductDescriptionGenerator:
             else:
                 description = description[:997] + "..."
         elif len(description) < 1000:
+            # Add more content to reach 1000 characters
             description = description + " " * (1000 - len(description))
+        
+        # 8. Final cleanup - ensure no special characters remain
+        description = re.sub(r'[^a-zA-Z0-9\s.,!?\n]', '', description)
+        
         return description
 
     def find_related_products(self, product_name: str, all_products: List[str]) -> List[str]:
@@ -182,15 +197,17 @@ class ProductDescriptionGenerator:
         3. Brand relationships
         4. Complementary items
         
-        Return only the 3 product names, separated by '|'
+        CRITICAL: Return only the 3 product names, separated by '|'. Do not include any special characters, quotes, or additional text.
         """
         
         try:
             response = self._make_api_call(prompt)
             if not response:
                 return []
+            # Clean the response to remove any special characters
+            response = re.sub(r'[^a-zA-Z0-9\s|]', '', response)
             related = response.split('|')
-            return [p.strip() for p in related[:3]]
+            return [p.strip() for p in related[:3] if p.strip()]
         except Exception as e:
             print(f"Error finding related products for {product_name}: {str(e)}")
             return []
