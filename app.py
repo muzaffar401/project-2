@@ -118,24 +118,70 @@ def process_products_in_background(generator, df, image_name_mapping, output_fil
                     img = Image.open(io.BytesIO(image_bytes)); mime_type = Image.MIME[img.format]
                     
                     readable_sku = sku.replace('_', ' ').replace('__', ' ')
+                    
                     validation_prompt = f"""
-You are an AI assistant specializing in product image verification. Your task is to determine if the product in the image is a clear match for the given SKU.
+You are a highly analytical AI system for verifying product listings. Your task is to determine if a product image matches its SKU by following a strict, logical process and returning a JSON object.
+
+**Input:**
+1.  **SKU:** `{sku}` (which is for a product named "{readable_sku}")
+2.  **IMAGE:** [An image will be provided]
 
 **Instructions:**
-1.  **Analyze the Image:** First, carefully identify the product in the image. Note its brand name.
-2.  **Analyze the SKU:** The SKU is "{sku}", which likely corresponds to the product "{readable_sku}".
-3.  **Compare and Decide:** Compare your analysis of the image with the product described by the SKU.
-    *   A **match** means it's the same product, even with minor differences in packaging or labeling.
-    *   A **mismatch** is when it is a completely different product (e.g., the SKU is for a food item, but the image shows clothing).
+1.  **Analyze ONLY the SKU:** What is the general category of the product based *only* on the SKU text?
+2.  **Analyze ONLY the Image:** What is the general category of the product shown *only* in the image?
+3.  **Compare and Decide:** Based on the two categories you just identified, do they represent the same type of product? A mismatch occurs if the categories are fundamentally different (e.g., 'Food' vs. 'Footwear').
 
-Based on your comparison, is this a match? Respond with a single word: YES or NO.
+**Output Format:**
+You MUST return a single, raw JSON object with the following three keys:
+- `sku_category`: Your conclusion from Instruction 1.
+- `image_category`: Your conclusion from Instruction 2.
+- `decision`: Your final verdict, which must be either the single word `MATCH` or `MISMATCH`.
 
-Final Answer (YES or NO):
+**Example 1 (Mismatch):**
+Input:
+- SKU: `BAISAN_HALF_1_2KG`
+- Image: [Image of shoes]
+Expected JSON Output:
+{{
+  "sku_category": "Food/Groceries",
+  "image_category": "Footwear/Shoes",
+  "decision": "MISMATCH"
+}}
+
+**Example 2 (Match):**
+Input:
+- SKU: `SHAN_MASALA_50G`
+- Image: [Image of Shan Masala spice mix]
+Expected JSON Output:
+{{
+  "sku_category": "Food/Groceries",
+  "image_category": "Food/Groceries",
+  "decision": "MATCH"
+}}
+
+Now, perform the analysis for the provided SKU and image.
 """
-                    validation_result = generator._make_api_call(validation_prompt, image_bytes=image_bytes, mime_type=mime_type)
+                    validation_response_text = generator._make_api_call(validation_prompt, image_bytes=image_bytes, mime_type=mime_type)
                     
-                    if "YES" not in validation_result.upper():
-                        raise ValueError(f"Image-SKU Mismatch for '{sku}'. AI validation returned: '{validation_result.strip()}'.")
+                    try:
+                        clean_response = validation_response_text.strip().lstrip('```json').rstrip('```').strip()
+                        validation_data = json.loads(clean_response)
+                        decision = validation_data.get("decision", "MISMATCH").upper()
+
+                        if decision != "MATCH":
+                            # Provide a detailed error message for debugging
+                            sku_cat = validation_data.get('sku_category', 'Unknown')
+                            img_cat = validation_data.get('image_category', 'Unknown')
+                            error_message = f"Image-SKU Mismatch for '{sku}'. AI decided categories do not match. SKU Category: '{sku_cat}', Image Category: '{img_cat}'."
+                            raise ValueError(error_message)
+
+                    except (json.JSONDecodeError, ValueError) as e:
+                        # Reraise the ValueError with the detailed message, or create a new one for JSON errors
+                        if isinstance(e, ValueError):
+                            raise e
+                        else:
+                            error_message = f"Failed to validate image for '{sku}'. AI returned an invalid response: '{validation_response_text[:200]}...'"
+                            raise ValueError(error_message)
 
                     result = generator.generate_product_description_with_image(sku, image_name, image_bytes, mime_type)
                     description = result.get('description', 'Description generation failed.')
