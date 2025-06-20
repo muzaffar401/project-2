@@ -129,6 +129,18 @@ def load_progress(output_file):
         print(f"Error loading progress: {str(e)}")
     return None
 
+def test_api_connection(generator):
+    """Test API connection with a simple prompt"""
+    try:
+        test_prompt = "Say 'Hello' if you can read this message."
+        response = generator._make_api_call(test_prompt)
+        if response and response != "API_CALL_FAILED":
+            return True, "API connection successful"
+        else:
+            return False, "API call failed"
+    except Exception as e:
+        return False, f"API test failed: {str(e)}"
+
 def process_products_in_background(generator, df, image_name_mapping, output_file):
     """
     A single, robust background processing function for all scenarios.
@@ -137,6 +149,20 @@ def process_products_in_background(generator, df, image_name_mapping, output_fil
     """
     try:
         create_processing_lock()
+        
+        # Test API connection first
+        api_ok, api_message = test_api_connection(generator)
+        if not api_ok:
+            error_status = {
+                'status': 'error', 
+                'error': f"API connection failed: {api_message}",
+                'last_updated': datetime.datetime.now().isoformat()
+            }
+            save_status(error_status)
+            remove_processing_lock()
+            return
+        
+        print(f"API connection test: {api_message}")
         
         total_products = len(df)
         all_skus = []
@@ -162,6 +188,8 @@ def process_products_in_background(generator, df, image_name_mapping, output_fil
             image_name = None
             
             try:
+                print(f"Starting to process product {processed_count}/{total_products}")
+                
                 # Get SKU and image name if they exist
                 if 'sku' in df.columns and pd.notna(row.get('sku')) and str(row.get('sku')).strip():
                     sku = str(row['sku'])
@@ -170,6 +198,8 @@ def process_products_in_background(generator, df, image_name_mapping, output_fil
                 
                 image_file = image_name_mapping.get(image_name) if image_name and image_name_mapping else None
                 current_item_identifier = sku or image_name or f"row {i+1}"
+
+                print(f"Processing: {current_item_identifier}")
 
                 # Update status
                 status = {
@@ -182,119 +212,140 @@ def process_products_in_background(generator, df, image_name_mapping, output_fil
                 # Skip if already processed
                 if (pd.notna(row.get('description')) and str(row.get('description')).strip() and 
                     pd.notna(row.get('related_products')) and str(row.get('related_products')).strip()):
+                    print(f"Skipping {current_item_identifier} - already processed")
                     continue
 
                 description = ""
                 related_products_str = ""
                 
                 if sku and image_file:
-                    image_bytes = image_file.read()
-                    image_file.seek(0)
-                    img = Image.open(io.BytesIO(image_bytes)); mime_type = Image.MIME[img.format]
-                    
-                    readable_sku = sku.replace('_', ' ').replace('__', ' ')
-                    
-                    validation_prompt = f"""
-You are a highly analytical AI system for verifying product listings. Your task is to determine if a product image matches its SKU by following a strict, logical process and returning a JSON object.
-
-**Input:**
-1.  **SKU:** `{sku}` (which is for a product named "{readable_sku}")
-2.  **IMAGE:** [An image will be provided]
-
-**Instructions:**
-1.  **Analyze ONLY the SKU:** What is the general category of the product based *only* on the SKU text?
-2.  **Analyze ONLY the Image:** What is the general category of the product shown *only* in the image?
-3.  **Compare and Decide:** Based on the two categories you just identified, do they represent the same type of product? A mismatch occurs if the categories are fundamentally different (e.g., 'Food' vs. 'Footwear').
-
-**Output Format:**
-You MUST return a single, raw JSON object with the following three keys:
-- `sku_category`: Your conclusion from Instruction 1.
-- `image_category`: Your conclusion from Instruction 2.
-- `decision`: Your final verdict, which must be either the single word `MATCH` or `MISMATCH`.
-
-**Example 1 (Mismatch):**
-Input:
-- SKU: `BAISAN_HALF_1_2KG`
-- Image: [Image of shoes]
-Expected JSON Output:
-{{
-  "sku_category": "Food/Groceries",
-  "image_category": "Footwear/Shoes",
-  "decision": "MISMATCH"
-}}
-
-**Example 2 (Match):**
-Input:
-- SKU: `SHAN_MASALA_50G`
-- Image: [Image of Shan Masala spice mix]
-Expected JSON Output:
-{{
-  "sku_category": "Food/Groceries",
-  "image_category": "Food/Groceries",
-  "decision": "MATCH"
-}}
-
-Now, perform the analysis for the provided SKU and image.
-"""
-                    validation_response_text = generator._make_api_call(validation_prompt, image_bytes=image_bytes, mime_type=mime_type)
-                    
+                    print(f"Processing {current_item_identifier} with image")
                     try:
-                        clean_response = validation_response_text.strip().lstrip('```json').rstrip('```').strip()
-                        validation_data = json.loads(clean_response)
-                        decision = validation_data.get("decision", "MISMATCH").upper()
+                        # Reset file pointer to beginning
+                        image_file.seek(0)
+                        image_bytes = image_file.read()
+                        image_file.seek(0)
+                        
+                        # Validate image format
+                        try:
+                            img = Image.open(io.BytesIO(image_bytes))
+                            mime_type = Image.MIME[img.format]
+                            print(f"Image format validated: {mime_type}")
+                        except Exception as img_error:
+                            raise ValueError(f"Invalid image format for {image_name}: {str(img_error)}")
+                        
+                        readable_sku = sku.replace('_', ' ').replace('__', ' ')
+                        
+                        # Simplified validation prompt to avoid getting stuck
+                        validation_prompt = f"""
+Analyze if the product image matches the SKU "{sku}" (which represents "{readable_sku}").
 
-                        if decision != "MATCH":
-                            # Provide a detailed error message for debugging
-                            sku_cat = validation_data.get('sku_category', 'Unknown')
-                            img_cat = validation_data.get('image_category', 'Unknown')
-                            error_message = f"Image-SKU Mismatch for '{sku}'. AI decided categories do not match. SKU Category: '{sku_cat}', Image Category: '{img_cat}'."
-                            raise ValueError(error_message)
+Return ONLY a JSON object with these fields:
+- "match": true if the image shows the same type of product as the SKU, false otherwise
+- "reason": brief explanation of your decision
 
-                    except (json.JSONDecodeError, ValueError) as e:
-                        # Reraise the ValueError with the detailed message, or create a new one for JSON errors
-                        if isinstance(e, ValueError):
-                            raise e
-                        else:
-                            error_message = f"Failed to validate image for '{sku}'. AI returned an invalid response: '{validation_response_text[:200]}...'"
-                            raise ValueError(error_message)
+Example: {{"match": true, "reason": "Image shows food product matching SKU"}}
+"""
+                        print(f"Making validation API call for {current_item_identifier}")
+                        validation_response_text = generator._make_api_call(validation_prompt, image_bytes=image_bytes, mime_type=mime_type)
+                        print(f"Validation response received: {validation_response_text[:100]}...")
+                        
+                        try:
+                            clean_response = validation_response_text.strip().lstrip('```json').rstrip('```').strip()
+                            validation_data = json.loads(clean_response)
+                            is_match = validation_data.get("match", False)
 
-                    result = generator.generate_product_description_with_image(sku, image_name, image_bytes, mime_type)
-                    description = result.get('description', 'Description generation failed.')
-                    related = generator.find_related_products(sku, all_skus)
-                    related_products_str = ' | '.join(related) if related else "No related products found."
+                            if not is_match:
+                                reason = validation_data.get('reason', 'No reason provided')
+                                error_message = f"Image-SKU Mismatch for '{sku}'. Reason: {reason}"
+                                raise ValueError(error_message)
+
+                        except (json.JSONDecodeError, ValueError) as e:
+                            if isinstance(e, ValueError) and "Image-SKU Mismatch" in str(e):
+                                raise e
+                            else:
+                                # If validation fails, continue with processing anyway
+                                print(f"Validation failed for {sku}, continuing with processing: {str(e)}")
+
+                        print(f"Making description API call for {current_item_identifier}")
+                        result = generator.generate_product_description_with_image(sku, image_name, image_bytes, mime_type)
+                        description = result.get('description', 'Description generation failed.')
+                        print(f"Description generated: {description[:50]}...")
+                        
+                        print(f"Making related products API call for {current_item_identifier}")
+                        related = generator.find_related_products(sku, all_skus)
+                        related_products_str = ' | '.join(related) if related else "No related products found."
+                        print(f"Related products found: {len(related) if related else 0}")
+
+                    except Exception as img_error:
+                        # If image processing fails, fall back to SKU-only processing
+                        print(f"Image processing failed for {sku}, falling back to SKU-only: {str(img_error)}")
+                        description = generator.generate_product_description(sku)
+                        related = generator.find_related_products(sku, all_skus)
+                        related_products_str = ' | '.join(related) if related else "No related products found."
 
                 elif sku and not image_file:
+                    print(f"Processing {current_item_identifier} with SKU only")
                     description = generator.generate_product_description(sku)
                     related = generator.find_related_products(sku, all_skus)
                     related_products_str = ' | '.join(related) if related else "No related products found."
 
                 elif image_file and not sku:
-                    image_bytes = image_file.read()
-                    image_file.seek(0)
-                    img = Image.open(io.BytesIO(image_bytes)); mime_type = Image.MIME[img.format]
-                    
-                    result = generator.generate_product_description_with_image("", image_name, image_bytes, mime_type)
-                    description = result.get('description', 'Description generation failed.')
-                    
-                    identified_title = result.get('title')
-                    if identified_title and identified_title.lower() not in ["unknown product", "api_call_failed"]:
-                        related = generator.find_related_products(identified_title, all_skus)
-                        related_products_str = ' | '.join(related) if related else "No related products found."
-                    else:
-                        related_products_str = 'Could not identify product from image to find related.'
+                    print(f"Processing {current_item_identifier} with image only")
+                    try:
+                        # Reset file pointer to beginning
+                        image_file.seek(0)
+                        image_bytes = image_file.read()
+                        image_file.seek(0)
+                        
+                        # Validate image format
+                        try:
+                            img = Image.open(io.BytesIO(image_bytes))
+                            mime_type = Image.MIME[img.format]
+                        except Exception as img_error:
+                            raise ValueError(f"Invalid image format for {image_name}: {str(img_error)}")
+                        
+                        result = generator.generate_product_description_with_image("", image_name, image_bytes, mime_type)
+                        description = result.get('description', 'Description generation failed.')
+                        
+                        identified_title = result.get('title')
+                        if identified_title and identified_title.lower() not in ["unknown product", "api_call_failed"]:
+                            related = generator.find_related_products(identified_title, all_skus)
+                            related_products_str = ' | '.join(related) if related else "No related products found."
+                        else:
+                            related_products_str = 'Could not identify product from image to find related.'
+                    except Exception as img_error:
+                        description = f'Image processing failed: {str(img_error)}'
+                        related_products_str = 'Not applicable due to image processing error.'
                 
                 else:
                     description = 'No SKU or image provided for this row.'
                     related_products_str = 'Not applicable.'
 
+                # Ensure we have valid strings
+                if not description or description == "API_CALL_FAILED":
+                    description = "Description generation failed due to API error."
+                if not related_products_str or related_products_str == "API_CALL_FAILED":
+                    related_products_str = "Related products generation failed due to API error."
+
                 df.at[i, 'description'] = description
                 df.at[i, 'related_products'] = related_products_str
                 
                 save_progress(df, output_file)
+                print(f"Successfully processed {current_item_identifier}")
+                
+                # Add delay between products
                 time.sleep(30)
 
             except Exception as e:
                 error_message = str(e)
+                print(f"Error processing product {current_item_identifier}: {error_message}")
+                
+                # Set default values for failed processing
+                df.at[i, 'description'] = f'Processing failed: {error_message[:100]}...'
+                df.at[i, 'related_products'] = 'Processing failed'
+                save_progress(df, output_file)
+                
                 status = {
                     'current': processed_count, 'total': total_products, 
                     'current_sku': current_item_identifier, 'status': 'error', 
@@ -302,6 +353,8 @@ Now, perform the analysis for the provided SKU and image.
                     'last_updated': datetime.datetime.now().isoformat()
                 }
                 save_status(status)
+                
+                # Only stop on critical errors, continue for others
                 if "Image-SKU Mismatch" in error_message:
                     remove_processing_lock()
                     return
@@ -613,6 +666,13 @@ def main():
             help="Select the AI model. For OpenAI, ensure a valid API key is in your .env file."
         )
 
+        # Add debug mode option
+        debug_mode = st.checkbox(
+            "Debug Mode",
+            value=False,
+            help="Enable detailed logging to help troubleshoot issues"
+        )
+
         scenario_options = [
             "Select your scenario",
             "Only Product SKUs",
@@ -745,6 +805,16 @@ def main():
                 try:
                     generator = ProductDescriptionGenerator(use_openai=use_openai)
                     
+                    # Test API connection first
+                    if debug_mode:
+                        with st.spinner("Testing API connection..."):
+                            api_ok, api_message = test_api_connection(generator)
+                            if api_ok:
+                                st.success(f"✅ {api_message}")
+                            else:
+                                st.error(f"❌ {api_message}")
+                                return
+                    
                     # Prepare dataframe for processing
                     merged_df = cleaned_df.copy()
                     merged_df['description'] = ''
@@ -754,6 +824,8 @@ def main():
                     if start_background_processing(generator, merged_df, {}, 'enriched_products.csv'):
                         st.success("✅ Processing started! You can now switch tabs or close this window - processing will continue in the background.")
                         st.info("🔄 Return to this page to check progress and download results when complete.")
+                        if debug_mode:
+                            st.info("🐛 Debug mode enabled - check the terminal/console for detailed logs.")
                         st.rerun()
                     else:
                         st.error("❌ Failed to start processing. Please try again.")
@@ -828,6 +900,16 @@ def main():
                 try:
                     generator = ProductDescriptionGenerator(use_openai=use_openai)
                     
+                    # Test API connection first
+                    if debug_mode:
+                        with st.spinner("Testing API connection..."):
+                            api_ok, api_message = test_api_connection(generator)
+                            if api_ok:
+                                st.success(f"✅ {api_message}")
+                            else:
+                                st.error(f"❌ {api_message}")
+                                return
+                    
                     # Prepare dataframe for processing
                     merged_df = cleaned_df.copy()
                     merged_df['description'] = ''
@@ -837,6 +919,8 @@ def main():
                     if start_background_processing(generator, merged_df, image_name_mapping, 'enriched_products_with_images.csv'):
                         st.success("✅ Processing started! You can now switch tabs or close this window - processing will continue in the background.")
                         st.info("🔄 Return to this page to check progress and download results when complete.")
+                        if debug_mode:
+                            st.info("🐛 Debug mode enabled - check the terminal/console for detailed logs.")
                         st.rerun()
                     else:
                         st.error("❌ Failed to start processing. Please try again.")

@@ -55,7 +55,12 @@ class ProductDescriptionGenerator:
                             "image_url": {"url": f"data:{mime_type};base64,{base64_image}"}
                         })
                     
-                    response = self.client.chat.completions.create(model="gpt-4o", messages=messages, max_tokens=400)
+                    response = self.client.chat.completions.create(
+                        model="gpt-4o", 
+                        messages=messages, 
+                        max_tokens=400,
+                        timeout=60  # Add timeout
+                    )
                     return response.choices[0].message.content
                 except Exception as e:
                     print(f"OpenAI API call failed on attempt {attempt + 1}: {e}")
@@ -72,8 +77,39 @@ class ProductDescriptionGenerator:
                     if image_bytes:
                         image_parts = [{"mime_type": mime_type, "data": image_bytes}]
                         content.append(image_parts[0])
-                    response = model.generate_content(content)
-                    return response.text
+                    
+                    # Add timeout and safety settings
+                    response = model.generate_content(
+                        content,
+                        generation_config=genai.types.GenerationConfig(
+                            max_output_tokens=400,
+                            temperature=0.7
+                        ),
+                        safety_settings=[
+                            {
+                                "category": "HARM_CATEGORY_HARASSMENT",
+                                "threshold": "BLOCK_NONE"
+                            },
+                            {
+                                "category": "HARM_CATEGORY_HATE_SPEECH",
+                                "threshold": "BLOCK_NONE"
+                            },
+                            {
+                                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                                "threshold": "BLOCK_NONE"
+                            },
+                            {
+                                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                                "threshold": "BLOCK_NONE"
+                            }
+                        ]
+                    )
+                    
+                    if response.text:
+                        return response.text
+                    else:
+                        return "API_CALL_FAILED"
+                        
                 except Exception as e:
                     print(f"Gemini API call failed on attempt {attempt + 1}: {e}")
                     if attempt < retries - 1:
@@ -203,4 +239,4 @@ def process_products(use_openai: bool = False):
 if __name__ == "__main__":
     # Check which API key is available and use that
     use_openai = bool(OPENAI_API_KEY) and not bool(GEMINI_API_KEY)
-    process_products(use_openai=use_openai) 
+    process_products(use_openai=use_openai)
