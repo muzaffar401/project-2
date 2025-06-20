@@ -102,7 +102,7 @@ def cleanup_on_exit():
 # Register cleanup function
 atexit.register(cleanup_on_exit)
 
-def process_products_in_background(generator, df, image_name_mapping, output_file, status_queue):
+def process_products_in_background(generator, df, image_name_mapping, output_file, status_queue, api_delay=5):
     """
     A single, robust background processing function for all scenarios.
     Handles SKU-only, image-only, and SKU+image cases.
@@ -252,7 +252,7 @@ Now, perform the analysis for the provided SKU and image.
                 df.at[i, 'related_products'] = related_products_str
                 
                 save_progress(df, output_file)
-                time.sleep(30)
+                time.sleep(api_delay)
 
             except Exception as e:
                 error_message = str(e)
@@ -542,6 +542,15 @@ def main():
             help="Select the AI model. For OpenAI, ensure a valid API key is in your .env file."
         )
 
+        api_delay = st.slider(
+            "Delay between products (seconds)",
+            min_value=1,
+            max_value=60,
+            value=5,
+            key="api_delay_slider",
+            help="A short delay between processing each product can help avoid API rate limit errors. Default: 5s."
+        )
+
         scenario_options = [
             "Select your scenario",
             "Only Product SKUs",
@@ -727,7 +736,7 @@ def main():
                         # Start background processing
                         thread = threading.Thread(
                             target=process_products_in_background,
-                            args=(generator, to_process, {}, 'enriched_products.csv', status_queue)
+                            args=(generator, to_process, {}, 'enriched_products.csv', status_queue, api_delay)
                         )
                         thread.daemon = True
                         thread.start()
@@ -858,7 +867,7 @@ def main():
                         # Start background processing
                         thread = threading.Thread(
                             target=process_products_in_background,
-                            args=(generator, to_process, image_name_mapping, 'enriched_products_with_images.csv', status_queue)
+                            args=(generator, to_process, image_name_mapping, 'enriched_products_with_images.csv', status_queue, api_delay)
                         )
                         thread.daemon = True
                         thread.start()
