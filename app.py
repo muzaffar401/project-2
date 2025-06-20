@@ -260,14 +260,16 @@ def reset_all_data():
 
 def initialize_session_state():
     """Initialize all required session state variables"""
-    if 'processing_thread' not in st.session_state:
-        st.session_state.processing_thread = None
-    if 'status_queue' not in st.session_state:
-        st.session_state.status_queue = queue.Queue()
-    if 'processing_started' not in st.session_state:
-        st.session_state.processing_started = False
-    if 'last_status_check' not in st.session_state:
-        st.session_state.last_status_check = 0
+    required_keys = {
+        'processing_thread': None,
+        'status_queue': queue.Queue(),
+        'processing_started': False,
+        'last_status_check': 0
+    }
+    
+    for key, default_value in required_keys.items():
+        if key not in st.session_state:
+            st.session_state[key] = default_value
 
 # Simple, modern, theme-adaptive CSS
 st.markdown("""
@@ -494,7 +496,7 @@ def display_processing_status():
     return False
 
 def main():
-    # Initialize session state
+    # Initialize session state at the very beginning
     initialize_session_state()
     
     st.markdown("""
