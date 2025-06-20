@@ -917,13 +917,16 @@ def main():
                         def process_flexible_rows(generator, df, image_name_mapping, output_file, status_queue):
                             try:
                                 total_products = len(df)
-                                for i, row in df.iterrows():
+                                for processed_count, (i, row) in enumerate(df.iterrows(), 1):
+                                    sku = None
+                                    image_name = None
                                     try:
                                         sku = str(row['sku']) if 'sku' in df.columns and pd.notna(row.get('sku', None)) and str(row.get('sku', '')).strip() != '' else None
                                         image_name = str(row['image_name']) if 'image_name' in df.columns and pd.notna(row.get('image_name', None)) and str(row.get('image_name', '')).strip() != '' else None
                                         image_file = image_name_mapping.get(image_name) if image_name else None
+                                        
                                         status = {
-                                            'current': i + 1,
+                                            'current': processed_count,
                                             'total': total_products,
                                             'current_sku': sku or image_name or '',
                                             'status': 'processing',
@@ -932,10 +935,13 @@ def main():
                                         }
                                         status_queue.put(status)
                                         save_status(status)
+
                                         if sku and image_file:
-                                            img = Image.open(io.BytesIO(image_file.read()))
+                                            image_bytes = image_file.read()
+                                            image_file.seek(0) # Reset pointer
+                                            img = Image.open(io.BytesIO(image_bytes))
                                             mime_type = Image.MIME[img.format]
-                                            description = generator.generate_product_description_with_image(sku, image_name, image_file.read(), mime_type=mime_type)
+                                            description = generator.generate_product_description_with_image(sku, image_name, image_bytes, mime_type=mime_type)
                                             df.at[i, 'description'] = description
                                             related = generator.find_related_products(sku, df['sku'].tolist())
                                             df.at[i, 'related_products'] = ' | '.join(related)
@@ -945,19 +951,22 @@ def main():
                                             related = generator.find_related_products(sku, df['sku'].tolist())
                                             df.at[i, 'related_products'] = ' | '.join(related)
                                         elif image_file and not sku:
-                                            img = Image.open(io.BytesIO(image_file.read()))
+                                            image_bytes = image_file.read()
+                                            image_file.seek(0) # Reset pointer
+                                            img = Image.open(io.BytesIO(image_bytes))
                                             mime_type = Image.MIME[img.format]
-                                            description = generator.generate_product_description_with_image("", image_name, image_file.read(), mime_type=mime_type)
+                                            description = generator.generate_product_description_with_image("", image_name, image_bytes, mime_type=mime_type)
                                             df.at[i, 'description'] = description
                                             df.at[i, 'related_products'] = ''
                                         else:
                                             df.at[i, 'description'] = 'No SKU or image.'
                                             df.at[i, 'related_products'] = ''
+                                        
                                         save_progress(df, output_file)
                                         time.sleep(30)
                                     except Exception as e:
                                         status = {
-                                            'current': i + 1,
+                                            'current': processed_count,
                                             'total': total_products,
                                             'current_sku': sku or image_name or '',
                                             'status': 'error',
