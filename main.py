@@ -118,25 +118,34 @@ class ProductDescriptionGenerator:
 
     def generate_product_description_with_image(self, product_name: str, image_name: str, image_bytes: bytes, mime_type: str = None) -> str:
         """Generate a detailed product description using both SKU and image context."""
-        prompt = f"""
-        Create a detailed, complete, and well-structured product description for the following product SKU: {product_name}.
-        The product image file name is: {image_name}.
         
-        CRITICAL REQUIREMENTS:
-        - ABSOLUTELY NO special characters allowed (no @, #, $, %, ^, &, *, (, ), -, _, +, =, [, ], {{, }}, |, \\, :, ;, ", ', <, >, ?, /, ~, `, etc.)
-        - Use ONLY letters (a-z, A-Z), numbers (0-9), spaces, periods (.), commas (,), exclamation marks (!), and question marks (?)
-        - Analyze the product image (if available) and use any visible features, colors, packaging, or branding to enhance the description
-        - The description must be at least 1000 characters and should not be cut off or incomplete
-        - The description MUST be in 2 or 3 well-structured paragraphs, each separated by TWO newlines (\n\n)
-        - Each paragraph should focus on different aspects (e.g., features, benefits, usage, quality, value, customer experience)
-        - Avoid extra spaces and ensure natural, readable English
-        - Include key features, benefits, and usage information
-        - Focus on quality, value, and customer benefits
-        - Do not repeat phrases
-        - End with a complete sentence
-        - Do not add any other text or comments
-        - If you reach the end and the description is not yet 1000 characters, add more relevant details until it is complete
-        """
+        if product_name:
+            # If SKU is provided, use image to enrich the description
+            prompt = f"""
+            Analyze the product image for '{image_name}' to enhance the description for the product SKU: {product_name}.
+            Use visual details from the image (packaging, color, size, branding) to make the description more vivid and accurate.
+            
+            CRITICAL REQUIREMENTS:
+            - The description must be detailed, complete, and well-structured, at least 1000 characters.
+            - Structure: 2-3 paragraphs separated by TWO newlines (\\n\\n).
+            - Formatting: NO special characters except basic punctuation (letters, numbers, spaces, .,!?-).
+            - Content: Focus on features, benefits, usage, and quality, enriched with details from the image.
+            - Ensure the description is complete and does not end abruptly.
+            """
+        else:
+            # If no SKU is provided, describe the product from the image alone
+            prompt = f"""
+            Analyze the provided image ('{image_name}') and generate a detailed product description for the item shown.
+            
+            CRITICAL REQUIREMENTS:
+            - Describe the item in the image from scratch.
+            - The description must be detailed, complete, and well-structured, at least 1000 characters.
+            - Structure: 2-3 paragraphs separated by TWO newlines (\\n\\n).
+            - Formatting: NO special characters except basic punctuation (letters, numbers, spaces, .,!?-).
+            - Content: Focus on visible features, potential uses, materials, and overall appearance.
+            - Ensure the description is complete and does not end abruptly.
+            """
+        
         try:
             description = self._make_api_call(prompt, image_bytes=image_bytes, mime_type=mime_type)
             if not description:
@@ -185,29 +194,34 @@ class ProductDescriptionGenerator:
         return description
 
     def find_related_products(self, product_name: str, all_products: List[str]) -> List[str]:
-        """Find 3 related products based on product similarity."""
+        """Find 3 related products from a given list."""
         prompt = f"""
-        Given the main product: {product_name}
-        And the list of available products: {all_products}
+        You are a product recommendation engine. Your task is to select up to 3 products from a provided list that are most related to a given product.
+
+        This is the product you need to find related items for: "{product_name}"
+
+        This is the list of available products to choose from:
+        {all_products}
         
-        Select 3 most related products that would complement or be relevant to the main product.
-        Consider:
-        1. Product category
-        2. Usage context
-        3. Brand relationships
-        4. Complementary items
+        CRITICAL INSTRUCTIONS:
+        1. You MUST choose up to 3 products exclusively from the provided list.
+        2. Do NOT invent, create, or suggest any product name that is not in the list.
+        3. Return ONLY the product names, separated by a pipe character '|'.
+        4. If you cannot find any related products in the list, return an empty response.
         
-        CRITICAL: Return only the 3 product names, separated by '|'.
+        Example Response: 'Product A|Product B|Product C'
         """
         
         try:
             response = self._make_api_call(prompt)
             if not response:
                 return []
-            # Clean the response to remove any special characters
-            response = re.sub(r'[^a-zA-Z0-9\s|]', '', response)
-            related = [p.strip() for p in response.split('|') if p.strip()]
-            return related[:3]
+            
+            # Clean the response and filter to ensure all returned products are from the original list
+            response_products = [p.strip() for p in response.split('|') if p.strip()]
+            valid_related_products = [p for p in response_products if p in all_products]
+            
+            return valid_related_products[:3]
         except Exception as e:
             print(f"Error finding related products for {product_name}: {str(e)}")
             return []
@@ -245,7 +259,7 @@ def process_products(use_openai: bool = False):
         (df['description'].isna()) | 
         (df['description'] == '') | 
         (df['description'] == 'Description generation failed.') |
-        (df['related_products'].isna()) |
+        (df['related_products'].isna()) | 
         (df['related_products'] == '')
     ]
     

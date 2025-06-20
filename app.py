@@ -837,10 +837,12 @@ def main():
                                         image_name = str(row['image_name']) if 'image_name' in df.columns and pd.notna(row.get('image_name', None)) and str(row.get('image_name', '')).strip() != '' else None
                                         image_file = image_name_mapping.get(image_name) if image_name else None
                                         
+                                        current_item_identifier = sku or image_name or f"row {i+1}"
+
                                         status = {
                                             'current': processed_count,
                                             'total': total_products,
-                                            'current_sku': sku or image_name or '',
+                                            'current_sku': current_item_identifier,
                                             'status': 'processing',
                                             'error': None,
                                             'last_updated': datetime.datetime.now().isoformat()
@@ -853,6 +855,27 @@ def main():
                                             image_file.seek(0) # Reset pointer
                                             img = Image.open(io.BytesIO(image_bytes))
                                             mime_type = Image.MIME[img.format]
+
+                                            # --- New Validation Step ---
+                                            validation_prompt = f"Does the product in this image match the SKU '{sku}'? Answer with only a single word: YES or NO."
+                                            validation_result = generator._make_api_call(validation_prompt, image_bytes=image_bytes, mime_type=mime_type)
+
+                                            if "NO" in validation_result.upper():
+                                                error_message = f"Image-SKU Mismatch: The provided image for '{sku}' does not appear to be the correct product. Processing has been stopped."
+                                                status = {
+                                                    'current': processed_count,
+                                                    'total': total_products,
+                                                    'current_sku': current_item_identifier,
+                                                    'status': 'error',
+                                                    'error': error_message,
+                                                    'last_updated': datetime.datetime.now().isoformat()
+                                                }
+                                                status_queue.put(status)
+                                                save_status(status)
+                                                return # Stop the entire thread
+
+                                            # --- End Validation Step ---
+
                                             description = generator.generate_product_description_with_image(sku, image_name, image_bytes, mime_type=mime_type)
                                             df.at[i, 'description'] = description
                                             related = generator.find_related_products(sku, df['sku'].tolist())
@@ -871,7 +894,7 @@ def main():
                                             df.at[i, 'description'] = description
                                             df.at[i, 'related_products'] = ''
                                         else:
-                                            df.at[i, 'description'] = 'No SKU or image.'
+                                            df.at[i, 'description'] = 'No SKU or image provided for this row.'
                                             df.at[i, 'related_products'] = ''
                                         
                                         save_progress(df, output_file)
@@ -880,7 +903,7 @@ def main():
                                         status = {
                                             'current': processed_count,
                                             'total': total_products,
-                                            'current_sku': sku or image_name or '',
+                                            'current_sku': sku or image_name or f"row {i+1}",
                                             'status': 'error',
                                             'error': str(e),
                                             'last_updated': datetime.datetime.now().isoformat()
@@ -937,6 +960,9 @@ def main():
                                         f"<div class='simple-error'>Error processing product {status['current_sku']}: {status['error']}</div>",
                                         unsafe_allow_html=True
                                     )
+                                    # Stop the monitoring loop on critical error
+                                    if "Image-SKU Mismatch" in status['error']:
+                                        break
                                     continue
                                 
                                 # Safely update progress bar
