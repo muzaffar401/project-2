@@ -13,6 +13,8 @@ import threading
 import queue
 import zipfile
 import atexit
+import signal
+import sys
 
 # Configure page - must be the first Streamlit command
 st.set_page_config(
@@ -32,6 +34,58 @@ PROCESSING_LOCK_FILE = 'processing.lock'
 
 # Global processing thread
 processing_thread = None
+processing_queue = None
+
+def cleanup_on_exit():
+    """Cleanup function to remove lock file on exit"""
+    try:
+        if os.path.exists(PROCESSING_LOCK_FILE):
+            os.remove(PROCESSING_LOCK_FILE)
+    except:
+        pass
+
+# Register cleanup function
+atexit.register(cleanup_on_exit)
+
+def is_processing_running():
+    """Check if processing is currently running by checking lock file"""
+    if os.path.exists(PROCESSING_LOCK_FILE):
+        try:
+            with open(PROCESSING_LOCK_FILE, 'r') as f:
+                lock_data = json.load(f)
+            # Check if the process is still running (simple timestamp check)
+            lock_time = datetime.datetime.fromisoformat(lock_data.get('timestamp', '2000-01-01T00:00:00'))
+            current_time = datetime.datetime.now()
+            # If lock is older than 1 hour, consider it stale
+            if (current_time - lock_time).total_seconds() > 3600:
+                os.remove(PROCESSING_LOCK_FILE)
+                return False
+            return True
+        except:
+            # If lock file is corrupted, remove it
+            try:
+                os.remove(PROCESSING_LOCK_FILE)
+            except:
+                pass
+            return False
+    return False
+
+def create_processing_lock():
+    """Create a lock file to indicate processing is running"""
+    lock_data = {
+        'timestamp': datetime.datetime.now().isoformat(),
+        'pid': os.getpid()
+    }
+    with open(PROCESSING_LOCK_FILE, 'w') as f:
+        json.dump(lock_data, f)
+
+def remove_processing_lock():
+    """Remove the processing lock file"""
+    try:
+        if os.path.exists(PROCESSING_LOCK_FILE):
+            os.remove(PROCESSING_LOCK_FILE)
+    except:
+        pass
 
 def save_status(status_data):
     """Save processing status to file with atomic write"""
@@ -75,41 +129,14 @@ def load_progress(output_file):
         print(f"Error loading progress: {str(e)}")
     return None
 
-def is_processing_running():
-    """Check if processing is currently running"""
-    return os.path.exists(PROCESSING_LOCK_FILE)
-
-def set_processing_lock():
-    """Set processing lock file"""
-    try:
-        with open(PROCESSING_LOCK_FILE, 'w') as f:
-            f.write(datetime.datetime.now().isoformat())
-    except Exception as e:
-        print(f"Error setting processing lock: {str(e)}")
-
-def remove_processing_lock():
-    """Remove processing lock file"""
-    try:
-        if os.path.exists(PROCESSING_LOCK_FILE):
-            os.remove(PROCESSING_LOCK_FILE)
-    except Exception as e:
-        print(f"Error removing processing lock: {str(e)}")
-
-def cleanup_on_exit():
-    """Cleanup function to be called on exit"""
-    remove_processing_lock()
-
-# Register cleanup function
-atexit.register(cleanup_on_exit)
-
-def process_products_in_background(generator, df, image_name_mapping, output_file, status_queue, api_delay=5):
+def process_products_in_background(generator, df, image_name_mapping, output_file):
     """
     A single, robust background processing function for all scenarios.
     Handles SKU-only, image-only, and SKU+image cases.
+    This function runs independently of Streamlit's session state.
     """
     try:
-        # Set processing lock
-        set_processing_lock()
+        create_processing_lock()
         
         total_products = len(df)
         all_skus = []
@@ -121,6 +148,14 @@ def process_products_in_background(generator, df, image_name_mapping, output_fil
             df['description'] = ''
         if 'related_products' not in df.columns:
             df['related_products'] = ''
+
+        # Load existing progress if available
+        existing_df = load_progress(output_file)
+        if existing_df is not None and len(existing_df) == len(df):
+            # Merge existing progress with current dataframe
+            for col in ['description', 'related_products']:
+                if col in existing_df.columns:
+                    df[col] = existing_df[col]
 
         for processed_count, (i, row) in enumerate(df.iterrows(), 1):
             sku = None
@@ -142,8 +177,12 @@ def process_products_in_background(generator, df, image_name_mapping, output_fil
                     'current_sku': current_item_identifier, 'status': 'processing', 'error': None,
                     'last_updated': datetime.datetime.now().isoformat()
                 }
-                status_queue.put(status)
                 save_status(status)
+
+                # Skip if already processed
+                if (pd.notna(row.get('description')) and str(row.get('description')).strip() and 
+                    pd.notna(row.get('related_products')) and str(row.get('related_products')).strip()):
+                    continue
 
                 description = ""
                 related_products_str = ""
@@ -252,28 +291,54 @@ Now, perform the analysis for the provided SKU and image.
                 df.at[i, 'related_products'] = related_products_str
                 
                 save_progress(df, output_file)
-                time.sleep(api_delay)
+                time.sleep(30)
 
             except Exception as e:
                 error_message = str(e)
-                status = {'current': processed_count, 'total': total_products, 'current_sku': current_item_identifier, 'status': 'error', 'error': error_message, 'last_updated': datetime.datetime.now().isoformat()}
-                status_queue.put(status)
+                status = {
+                    'current': processed_count, 'total': total_products, 
+                    'current_sku': current_item_identifier, 'status': 'error', 
+                    'error': error_message,
+                    'last_updated': datetime.datetime.now().isoformat()
+                }
                 save_status(status)
                 if "Image-SKU Mismatch" in error_message:
                     remove_processing_lock()
                     return
                 continue
 
-        final_status = {'current': total_products, 'total': total_products, 'status': 'complete', 'error': None, 'last_updated': datetime.datetime.now().isoformat()}
-        status_queue.put(final_status)
+        final_status = {
+            'current': total_products, 'total': total_products, 
+            'status': 'complete', 'error': None,
+            'last_updated': datetime.datetime.now().isoformat()
+        }
         save_status(final_status)
         remove_processing_lock()
 
     except Exception as e:
-        error_status = {'status': 'error', 'error': str(e), 'last_updated': datetime.datetime.now().isoformat()}
-        status_queue.put(error_status)
+        error_status = {
+            'status': 'error', 'error': str(e),
+            'last_updated': datetime.datetime.now().isoformat()
+        }
         save_status(error_status)
         remove_processing_lock()
+
+def start_background_processing(generator, df, image_name_mapping, output_file):
+    """Start background processing in a separate thread"""
+    global processing_thread
+    
+    # Kill existing thread if running
+    if processing_thread and processing_thread.is_alive():
+        return False
+    
+    # Start new processing thread
+    processing_thread = threading.Thread(
+        target=process_products_in_background,
+        args=(generator, df, image_name_mapping, output_file),
+        daemon=True
+    )
+    processing_thread.start()
+    return True
 
 def reset_all_data():
     """Reset all data files and clear history"""
@@ -492,36 +557,8 @@ def main():
             st.success("✅ All data has been reset! Please refresh the page.")
             st.rerun()
 
-    # Check if processing is already running
-    if is_processing_running():
-        st.markdown("""
-            <div class='simple-info'>
-                <b>🔄 Processing is currently running in the background!</b><br>
-                You can safely switch tabs or refresh the page. The processing will continue.
-            </div>
-        """, unsafe_allow_html=True)
-        
-        # Show current status
-        current_status = load_status()
-        if current_status:
-            if current_status.get('status') == 'complete':
-                st.markdown("<div class='simple-info'>✅ Processing completed!</div>", unsafe_allow_html=True)
-                remove_processing_lock()
-            elif current_status.get('status') == 'error':
-                st.markdown(f"<div class='simple-error'>❌ Processing error: {current_status.get('error', 'Unknown error')}</div>", unsafe_allow_html=True)
-                remove_processing_lock()
-            else:
-                # Show progress
-                current = current_status.get('current', 0)
-                total = current_status.get('total', 1)
-                progress = max(0, min(100, int((current / total) * 100))) if total > 0 else 0
-                
-                st.progress(progress)
-                st.markdown(f"<span style='color:var(--primary-color);'>Processing product <b>{current}</b> of <b>{total}</b>: <b>{current_status.get('current_sku', '')}</b></span>", unsafe_allow_html=True)
-                
-                # Auto-refresh every 2 seconds
-                time.sleep(2)
-                st.rerun()
+    # The check for an ongoing process has been removed for reliability.
+    # Each processing task now starts fresh.
 
     # Centered layout with two simple cards
     col1, col2 = st.columns([1, 2], gap="large")
@@ -540,15 +577,6 @@ def main():
             index=0, # Default to Gemini
             key="model_select",
             help="Select the AI model. For OpenAI, ensure a valid API key is in your .env file."
-        )
-
-        api_delay = st.slider(
-            "Delay between products (seconds)",
-            min_value=1,
-            max_value=60,
-            value=5,
-            key="api_delay_slider",
-            help="A short delay between processing each product can help avoid API rate limit errors. Default: 5s."
         )
 
         scenario_options = [
@@ -673,11 +701,6 @@ def main():
             progress_bar = st.progress(0)
             status_text = st.empty()
             if st.button("Start Processing", key="start_btn", type="primary"):
-                # Check if processing is already running
-                if is_processing_running():
-                    st.markdown("<div class='simple-error'>❌ Processing is already running! Please wait for it to complete.</div>", unsafe_allow_html=True)
-                    return
-                
                 # Always start fresh when the button is clicked.
                 if os.path.exists('processing_status.json'):
                     os.remove('processing_status.json')
@@ -736,13 +759,76 @@ def main():
                         # Start background processing
                         thread = threading.Thread(
                             target=process_products_in_background,
-                            args=(generator, to_process, {}, 'enriched_products.csv', status_queue, api_delay)
+                            args=(generator, to_process, {}, 'enriched_products.csv')
                         )
                         thread.daemon = True
                         thread.start()
                         
-                        st.success("✅ Processing started! You can now switch tabs or refresh the page. The processing will continue in the background.")
-                        st.rerun()
+                        # Monitor progress with auto-refresh
+                        progress_placeholder = st.empty()
+                        status_placeholder = st.empty()
+                        error_placeholder = st.empty()
+                        while thread.is_alive():
+                            try:
+                                status = status_queue.get_nowait()
+                                if status['status'] == 'complete':
+                                    st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
+                                    with open('enriched_products.csv', 'rb') as f:
+                                        st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                                        st.download_button(
+                                            label="⬇️ Download Results",
+                                            data=f,
+                                            file_name="enriched_products.csv",
+                                            mime="text/csv",
+                                            key="download_sku"
+                                        )
+                                        st.markdown("</div>", unsafe_allow_html=True)
+                                    break
+                                elif status['status'] == 'error':
+                                    error_placeholder.markdown(
+                                        f"<div class='simple-error'>Error processing product {status['current_sku']}: {status['error']}</div>",
+                                        unsafe_allow_html=True
+                                    )
+                                    # Stop the monitoring loop on critical error
+                                    if "Image-SKU Mismatch" in status['error']:
+                                        break
+                                    continue
+                                
+                                # Safely update progress bar
+                                current = status.get('current')
+                                total = status.get('total')
+                                if isinstance(current, (int, float)) and isinstance(total, (int, float)) and total > 0:
+                                    progress = max(0, min(100, int((current / total) * 100)))
+                                    progress_placeholder.progress(progress)
+                                
+                                status_placeholder.markdown(
+                                    f"<span style='color:var(--primary-color);'>Processing product <b>{status.get('current', 0)}</b> of <b>{status.get('total', 0)}</b>: <b>{status.get('current_sku', '')}</b></span>",
+                                    unsafe_allow_html=True
+                                )
+                                
+                                time.sleep(1)
+                            except queue.Empty:
+                                time.sleep(1)
+                                continue
+                        
+                        final_status = load_status()
+                        if final_status and final_status['status'] == 'complete':
+                                st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
+                                with open('enriched_products.csv', 'rb') as f:
+                                    st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                                    st.download_button(
+                                        label="⬇️ Download Results",
+                                        data=f,
+                                        file_name="enriched_products.csv",
+                                        mime="text/csv",
+                                        key="download_sku_final"
+                                    )
+                                    st.markdown("</div>", unsafe_allow_html=True)
+                        elif final_status and final_status['status'] == 'error':
+                            error_placeholder.markdown(
+                                f"<div class='simple-error'>Error processing product {final_status['current_sku']}: {final_status['error']}</div>",
+                                unsafe_allow_html=True
+                            )
 
                     except Exception as e:
                         st.markdown(f"<div class='simple-error'>An error occurred during processing: {str(e)}</div>", unsafe_allow_html=True)
@@ -804,11 +890,6 @@ def main():
             status_text = st.empty()
             download_ready = False
             if st.button("Start Processing", key="start_btn_img", type="primary"):
-                # Check if processing is already running
-                if is_processing_running():
-                    st.markdown("<div class='simple-error'>❌ Processing is already running! Please wait for it to complete.</div>", unsafe_allow_html=True)
-                    return
-                    
                 # Always start fresh when the button is clicked.
                 if os.path.exists('processing_status.json'):
                     os.remove('processing_status.json')
@@ -867,13 +948,76 @@ def main():
                         # Start background processing
                         thread = threading.Thread(
                             target=process_products_in_background,
-                            args=(generator, to_process, image_name_mapping, 'enriched_products_with_images.csv', status_queue, api_delay)
+                            args=(generator, to_process, image_name_mapping, 'enriched_products_with_images.csv')
                         )
                         thread.daemon = True
                         thread.start()
                         
-                        st.success("✅ Processing started! You can now switch tabs or refresh the page. The processing will continue in the background.")
-                        st.rerun()
+                        # Monitor progress with auto-refresh
+                        progress_placeholder = st.empty()
+                        status_placeholder = st.empty()
+                        error_placeholder = st.empty()
+                        while thread.is_alive():
+                            try:
+                                status = status_queue.get_nowait()
+                                if status['status'] == 'complete':
+                                    st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
+                                    with open('enriched_products_with_images.csv', 'rb') as f:
+                                        st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                                        st.download_button(
+                                            label="⬇️ Download Results",
+                                            data=f,
+                                            file_name="enriched_products_with_images.csv",
+                                            mime="text/csv",
+                                            key="download_image"
+                                        )
+                                        st.markdown("</div>", unsafe_allow_html=True)
+                                    break
+                                elif status['status'] == 'error':
+                                    error_placeholder.markdown(
+                                        f"<div class='simple-error'>Error processing product {status['current_sku']}: {status['error']}</div>",
+                                        unsafe_allow_html=True
+                                    )
+                                    # Stop the monitoring loop on critical error
+                                    if "Image-SKU Mismatch" in status['error']:
+                                        break
+                                    continue
+                                
+                                # Safely update progress bar
+                                current = status.get('current')
+                                total = status.get('total')
+                                if isinstance(current, (int, float)) and isinstance(total, (int, float)) and total > 0:
+                                    progress = max(0, min(100, int((current / total) * 100)))
+                                    progress_placeholder.progress(progress)
+                                
+                                status_placeholder.markdown(
+                                    f"<span style='color:var(--primary-color);'>Processing product <b>{status.get('current', 0)}</b> of <b>{status.get('total', 0)}</b>: <b>{status.get('current_sku', '')}</b></span>",
+                                    unsafe_allow_html=True
+                                )
+                                
+                                time.sleep(1)
+                            except queue.Empty:
+                                time.sleep(1)
+                                continue
+                        
+                        final_status = load_status()
+                        if final_status and final_status['status'] == 'complete':
+                                st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
+                                with open('enriched_products_with_images.csv', 'rb') as f:
+                                    st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                                    st.download_button(
+                                        label="⬇️ Download Results",
+                                        data=f,
+                                        file_name="enriched_products_with_images.csv",
+                                        mime="text/csv",
+                                        key="download_image_final"
+                                    )
+                                    st.markdown("</div>", unsafe_allow_html=True)
+                        elif final_status and final_status['status'] == 'error':
+                            error_placeholder.markdown(
+                                f"<div class='simple-error'>Error processing product {final_status['current_sku']}: {final_status['error']}</div>",
+                                unsafe_allow_html=True
+                            )
 
                     except Exception as e:
                         st.markdown(f"<div class='simple-error'>An error occurred during processing: {str(e)}</div>", unsafe_allow_html=True)
@@ -915,4 +1059,4 @@ def main():
             )
 
 if __name__ == "__main__":
-    main() 
+    main()
