@@ -261,21 +261,6 @@ def process_products_with_images_background(generator, df, uploaded_images, outp
         status_queue.put(error_status)
         save_status(error_status)
 
-def check_processing_state():
-    """Check if there's an ongoing processing task and restore its state"""
-    status = load_status()
-    if status and status['status'] == 'processing':
-        # Calculate time since last update
-        last_updated = datetime.datetime.fromisoformat(status['last_updated'])
-        time_since_update = datetime.datetime.now() - last_updated
-        
-        # If no update in last 5 minutes, consider it stale
-        if time_since_update.total_seconds() > 300:
-            return None
-            
-        return status
-    return None
-
 def reset_all_data():
     """Reset all data files and clear history"""
     files_to_remove = [
@@ -492,44 +477,8 @@ def main():
             st.success("✅ All data has been reset! Please refresh the page.")
             st.rerun()
 
-    # Check for ongoing processing
-    processing_state = check_processing_state()
-    if processing_state:
-        st.markdown("""
-            <div class='simple-info'>
-                <b>🔄 Processing in progress...</b><br>
-                A previous processing task was detected and is still running.
-            </div>
-        """, unsafe_allow_html=True)
-        
-        # Show progress with a safety check
-        current = processing_state.get('current')
-        total = processing_state.get('total')
-        if isinstance(current, (int, float)) and isinstance(total, (int, float)) and total > 0:
-            progress = max(0, min(100, int((current / total) * 100)))
-            st.progress(progress)
-        
-        st.markdown(
-            f"<span style='color:var(--primary-color);'>Processing product <b>{processing_state.get('current', 0)}</b> of <b>{processing_state.get('total', 0)}</b>: <b>{processing_state.get('current_sku', '')}</b></span>",
-            unsafe_allow_html=True
-        )
-        
-        # Show download button if results exist
-        if os.path.exists('enriched_products.csv'):
-            with open('enriched_products.csv', 'rb') as f:
-                st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
-                st.download_button(
-                    label="⬇️ Download Current Results",
-                    data=f,
-                    file_name="enriched_products.csv",
-                    mime="text/csv",
-                    key="download_ongoing"
-                )
-                st.markdown("</div>", unsafe_allow_html=True)
-        
-        # Auto-refresh the page
-        time.sleep(5)
-        st.rerun()
+    # The check for an ongoing process has been removed for reliability.
+    # Each processing task now starts fresh.
 
     # Centered layout with two simple cards
     col1, col2 = st.columns([1, 2], gap="large")
@@ -662,6 +611,12 @@ def main():
             progress_bar = st.progress(0)
             status_text = st.empty()
             if st.button("Start Processing", key="start_btn", type="primary"):
+                # Always start fresh when the button is clicked.
+                if os.path.exists('processing_status.json'):
+                    os.remove('processing_status.json')
+                if os.path.exists('enriched_products.csv'):
+                    os.remove('enriched_products.csv')
+                
                 with st.spinner("Processing products..."):
                     try:
                         GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -669,31 +624,12 @@ def main():
                         use_openai = bool(OPENAI_API_KEY) and not bool(GEMINI_API_KEY)
                         generator = ProductDescriptionGenerator(use_openai=use_openai)
                         
-                        # Load or initialize progress
-                        if os.path.exists('enriched_products.csv'):
-                            enriched_df = pd.read_csv('enriched_products.csv')
-                            for col in ['sku', 'description', 'related_products']:
-                                if col not in enriched_df.columns:
-                                    enriched_df[col] = ''
-                            merged_df = pd.merge(cleaned_df, enriched_df, on='sku', how='left', suffixes=('', '_enriched'))
-                            if 'description_enriched' not in merged_df.columns:
-                                merged_df['description_enriched'] = ''
-                            if 'related_products_enriched' not in merged_df.columns:
-                                merged_df['related_products_enriched'] = ''
-                            merged_df['description'] = merged_df['description_enriched'].combine_first(merged_df['description'])
-                            merged_df['related_products'] = merged_df['related_products_enriched'].combine_first(merged_df['related_products'])
-                            merged_df = merged_df[['sku', 'description', 'related_products']]
-                        else:
-                            merged_df = cleaned_df.copy()
-                            merged_df['description'] = ''
-                            merged_df['related_products'] = ''
+                        # This section should not try to load old files, as we are starting fresh
+                        merged_df = cleaned_df.copy()
+                        merged_df['description'] = ''
+                        merged_df['related_products'] = ''
                         
-                        # Find products that need processing
-                        to_process = merged_df[
-                            (merged_df['description'].isna()) | (merged_df['description'] == '') |
-                            (merged_df['description'] == 'Description generation failed.') |
-                            (merged_df['related_products'].isna()) | (merged_df['related_products'] == '')
-                        ]
+                        to_process = merged_df
                         total_to_process = len(to_process)
                         
                         if total_to_process == 0:
@@ -842,6 +778,12 @@ def main():
             status_text = st.empty()
             download_ready = False
             if st.button("Start Processing", key="start_btn_img", type="primary"):
+                # Always start fresh when the button is clicked.
+                if os.path.exists('processing_status.json'):
+                    os.remove('processing_status.json')
+                if os.path.exists('enriched_products_with_images.csv'):
+                    os.remove('enriched_products_with_images.csv')
+                    
                 with st.spinner("Processing products with images..."):
                     try:
                         GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -849,33 +791,12 @@ def main():
                         use_openai = bool(OPENAI_API_KEY) and not bool(GEMINI_API_KEY)
                         generator = ProductDescriptionGenerator(use_openai=use_openai)
                         
-                        # Load or initialize progress
-                        if os.path.exists('enriched_products_with_images.csv'):
-                            enriched_df = pd.read_csv('enriched_products_with_images.csv')
-                            for col in ['sku', 'image_name', 'description', 'related_products']:
-                                if col not in enriched_df.columns:
-                                    enriched_df[col] = ''
-                            merged_df = pd.merge(cleaned_df, enriched_df, on=['sku', 'image_name'] if 'image_name' in cleaned_df.columns else ['sku'], how='left', suffixes=('', '_enriched'))
-                            if 'description_enriched' not in merged_df.columns:
-                                merged_df['description_enriched'] = ''
-                            if 'related_products_enriched' not in merged_df.columns:
-                                merged_df['related_products_enriched'] = ''
-                            merged_df['description'] = merged_df['description_enriched'].combine_first(merged_df['description'])
-                            merged_df['related_products'] = merged_df['related_products_enriched'].combine_first(merged_df['related_products'])
-                            merged_df = merged_df[[col for col in ['sku', 'image_name', 'description', 'related_products'] if col in merged_df.columns]]
-                        else:
-                            merged_df = cleaned_df.copy()
-                            if 'description' not in merged_df.columns:
-                                merged_df['description'] = ''
-                            if 'related_products' not in merged_df.columns:
-                                merged_df['related_products'] = ''
-                        
-                        # Find products that need processing
-                        to_process = merged_df[
-                            (merged_df['description'].isna()) | (merged_df['description'] == '') |
-                            (merged_df['description'] == 'Description generation failed.') |
-                            (merged_df['related_products'].isna()) | (merged_df['related_products'] == '')
-                        ]
+                        # This section should not try to load old files, as we are starting fresh
+                        merged_df = cleaned_df.copy()
+                        merged_df['description'] = ''
+                        merged_df['related_products'] = ''
+
+                        to_process = merged_df
                         total_to_process = len(to_process)
                         
                         if total_to_process == 0:
