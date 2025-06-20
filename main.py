@@ -9,6 +9,8 @@ import re
 from PIL import Image
 import io
 import mimetypes
+import json
+import base64
 
 # Load environment variables
 load_dotenv()
@@ -29,202 +31,107 @@ if OPENAI_API_KEY:
     openai.api_key = OPENAI_API_KEY
 
 class ProductDescriptionGenerator:
-    def __init__(self, use_openai: bool = False):
+    def __init__(self, use_openai=False):
         self.use_openai = use_openai
-        if not use_openai:
-            self.generation_config = {
-                "temperature": 0.7,
-                "top_p": 0.8,
-                "top_k": 40,
-                "max_output_tokens": 1024,
-            }
-            self.model = genai.GenerativeModel(
-                model_name='models/gemini-1.5-flash',
-                generation_config=self.generation_config
-            )
-
-    def _build_gemini_content(self, prompt: str, image_bytes: bytes = None, mime_type: str = None):
-        if image_bytes and mime_type:
-            return [{
-                "role": "user",
-                "parts": [
-                    prompt,
-                    {"mime_type": mime_type, "data": image_bytes}
-                ]
-            }]
+        if self.use_openai:
+            self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            if not self.client.api_key:
+                raise ValueError("OPENAI_API_KEY not found or is invalid.")
         else:
-            return prompt
+            self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+            if not self.gemini_api_key:
+                raise ValueError("GEMINI_API_KEY not found in environment variables.")
+            genai.configure(api_key=self.gemini_api_key)
 
-    def _make_api_call(self, prompt: str, max_retries: int = 5, image_bytes: bytes = None, mime_type: str = None) -> str:
-        """Make API call with exponential backoff. Optionally, include image bytes for Gemini."""
-        base_delay = 60  # Start with 60 seconds delay
-        for attempt in range(max_retries):
-            try:
-                if self.use_openai:
-                    response = openai.ChatCompletion.create(
-                        model="gpt-3.5-turbo",
-                        messages=[
-                            {"role": "system", "content": "You are a helpful assistant that generates product descriptions and finds related products."},
-                            {"role": "user", "content": prompt}
-                        ],
-                        max_tokens=1024,
-                        temperature=0.7
-                    )
-                    return response.choices[0].message.content.strip()
-                else:
-                    content = self._build_gemini_content(prompt, image_bytes, mime_type)
-                    response = self.model.generate_content(content)
-                    return response.text.strip()
-            except Exception as e:
-                if "quota" in str(e).lower() or "rate limit" in str(e).lower():
-                    if attempt < max_retries - 1:
-                        delay = base_delay * (2 ** attempt)  # Exponential backoff
-                        print(f"Rate limit hit, waiting {delay} seconds before retry...")
-                        time.sleep(delay)
-                        continue
-                print(f"Error in API call: {str(e)}")
-                return ""
-        return ""
-
-    def generate_product_description(self, product_name: str) -> str:
-        """Generate a detailed product description."""
-        prompt = f"""
-        Create a detailed, complete, and well-structured product description for the following product: {product_name}
-        
-        CRITICAL REQUIREMENTS:
-        - ABSOLUTELY NO special characters allowed (no @, #, $, %, ^, &, *, (, ), -, _, +, =, [, ], {{, }}, |, \\, :, ;, ", ', <, >, ?, /, ~, `, etc.)
-        - Use ONLY letters (a-z, A-Z), numbers (0-9), spaces, periods (.), commas (,), exclamation marks (!), and question marks (?)
-        - The description must be at least 1000 characters and should not be cut off or incomplete
-        - The description MUST be in 2 or 3 well-structured paragraphs, each separated by TWO newlines (\n\n)
-        - Each paragraph should focus on different aspects (e.g., features, benefits, usage, quality, value, customer experience)
-        - Avoid extra spaces and ensure natural, readable English
-        - Include key features, benefits, and usage information
-        - Focus on quality, value, and customer benefits
-        - Do not repeat phrases
-        - End with a complete sentence
-        - Do not add any other text or comments
-        - If you reach the end and the description is not yet 1000 characters, add more relevant details until it is complete
-        """
-        try:
-            description = self._make_api_call(prompt)
-            if not description:
-                return "Description generation failed."
-            # Clean the description
-            description = self._clean_description(description)
-            return description.strip()
-        except Exception as e:
-            print(f"Error generating description for {product_name}: {str(e)}")
-            return "Description generation failed."
-
-    def generate_product_description_with_image(self, product_name: str, image_name: str, image_bytes: bytes, mime_type: str = None) -> str:
-        """Generate a detailed product description using both SKU and image context."""
-        
-        if product_name:
-            # If SKU is provided, use image to enrich the description
-            prompt = f"""
-            Analyze the product image for '{image_name}' to enhance the description for the product SKU: {product_name}.
-            Use visual details from the image (packaging, color, size, branding) to make the description more vivid and accurate.
-            
-            CRITICAL REQUIREMENTS:
-            - The description must be detailed, complete, and well-structured, at least 1000 characters.
-            - Structure: 2-3 paragraphs separated by TWO newlines (\\n\\n).
-            - Formatting: NO special characters except basic punctuation (letters, numbers, spaces, .,!?-).
-            - Content: Focus on features, benefits, usage, and quality, enriched with details from the image.
-            - Ensure the description is complete and does not end abruptly.
-            """
+    def _make_api_call(self, prompt, image_bytes=None, mime_type=None, retries=3, delay=30):
+        if self.use_openai:
+            for attempt in range(retries):
+                try:
+                    messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+                    if image_bytes:
+                        base64_image = base64.b64encode(image_bytes).decode('utf-8')
+                        messages[0]["content"].append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime_type};base64,{base64_image}"}
+                        })
+                    
+                    response = self.client.chat.completions.create(model="gpt-4o", messages=messages, max_tokens=400)
+                    return response.choices[0].message.content
+                except Exception as e:
+                    print(f"OpenAI API call failed on attempt {attempt + 1}: {e}")
+                    if attempt < retries - 1:
+                        time.sleep(delay * (attempt + 1))
+                    else:
+                        return "API_CALL_FAILED"
+            return "API_CALL_FAILED"
         else:
-            # If no SKU is provided, describe the product from the image alone
-            prompt = f"""
-            Analyze the provided image ('{image_name}') and generate a detailed product description for the item shown.
-            
-            CRITICAL REQUIREMENTS:
-            - Describe the item in the image from scratch.
-            - The description must be detailed, complete, and well-structured, at least 1000 characters.
-            - Structure: 2-3 paragraphs separated by TWO newlines (\\n\\n).
-            - Formatting: NO special characters except basic punctuation (letters, numbers, spaces, .,!?-).
-            - Content: Focus on visible features, potential uses, materials, and overall appearance.
-            - Ensure the description is complete and does not end abruptly.
-            """
-        
-        try:
-            description = self._make_api_call(prompt, image_bytes=image_bytes, mime_type=mime_type)
-            if not description:
-                return "Description generation failed."
-            description = self._clean_description(description)
-            return description.strip()
-        except Exception as e:
-            print(f"Error generating description for {product_name} with image: {str(e)}")
-            return "Description generation failed."
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            for attempt in range(retries):
+                try:
+                    content = [prompt]
+                    if image_bytes:
+                        image_parts = [{"mime_type": mime_type, "data": image_bytes}]
+                        content.append(image_parts[0])
+                    response = model.generate_content(content)
+                    return response.text
+                except Exception as e:
+                    print(f"Gemini API call failed on attempt {attempt + 1}: {e}")
+                    if attempt < retries - 1:
+                        time.sleep(delay * (attempt + 1))
+                    else:
+                        return "API_CALL_FAILED"
+            return "API_CALL_FAILED"
 
-    def _clean_description(self, description: str) -> str:
-        """Clean description by removing special characters and ensuring proper formatting"""
-        # 1. Remove ALL special characters except allowed ones
-        # Only allow: letters, numbers, spaces, periods, commas, exclamation marks, question marks, and newlines
-        description = re.sub(r'[^a-zA-Z0-9\s.,!?\n]', '', description)
-        
-        # 2. Remove spaces before punctuation
-        description = re.sub(r'\s+([.,!?])', r'\1', description)
-        
-        # 3. Collapse multiple spaces/tabs but preserve newlines
-        description = re.sub(r'[ \t]+', ' ', description)
-        
-        # 4. Remove extra spaces at the start/end of each line
-        description = '\n'.join(line.strip() for line in description.splitlines())
-        
-        # 5. Ensure double newlines between paragraphs (replace 2+ newlines with exactly 2)
-        description = re.sub(r'(\n\s*){2,}', '\n\n', description)
-        
-        # 6. Remove extra spaces at the start/end of the whole description
-        description = description.strip()
-        
-        # 7. Ensure at least 1000 characters, but do not cut off sentences
-        if len(description) > 1000:
-            last_period = description.rfind('.', 0, 1000)
-            if last_period != -1:
-                description = description[:last_period+1]
-            else:
-                description = description[:997] + "..."
-        elif len(description) < 1000:
-            # Add more content to reach 1000 characters
-            description = description + " " * (1000 - len(description))
-        
-        # 8. Final cleanup - ensure no special characters remain
-        description = re.sub(r'[^a-zA-Z0-9\s.,!?\n]', '', description)
-        
-        return description
+    def generate_product_description(self, sku):
+        prompt = f"Generate a compelling product description for a product with SKU: {sku}. The description should be marketing-friendly, around 80-120 words, and highlight key features and benefits. Format it as a single paragraph."
+        return self._make_api_call(prompt)
 
-    def find_related_products(self, product_name: str, all_products: List[str]) -> List[str]:
-        """Find 3 related products from a given list."""
-        prompt = f"""
-        You are a product recommendation engine. Your task is to select up to 3 products from a provided list that are most related to a given product.
-
-        This is the product you need to find related items for: "{product_name}"
-
-        This is the list of available products to choose from:
-        {all_products}
-        
-        CRITICAL INSTRUCTIONS:
-        1. You MUST choose up to 3 products exclusively from the provided list.
-        2. Do NOT invent, create, or suggest any product name that is not in the list.
-        3. Return ONLY the product names, separated by a pipe character '|'.
-        4. If you cannot find any related products in the list, return an empty response.
-        
-        Example Response: 'Product A|Product B|Product C'
-        """
-        
-        try:
-            response = self._make_api_call(prompt)
-            if not response:
-                return []
-            
-            # Clean the response and filter to ensure all returned products are from the original list
-            response_products = [p.strip() for p in response.split('|') if p.strip()]
-            valid_related_products = [p for p in response_products if p in all_products]
-            
-            return valid_related_products[:3]
-        except Exception as e:
-            print(f"Error finding related products for {product_name}: {str(e)}")
+    def find_related_products(self, current_sku_or_title, all_skus, num_related=3):
+        skus_to_search = [s for s in all_skus if s and s != current_sku_or_title]
+        if not skus_to_search:
             return []
+        
+        prompt = f"""You are a product recommendation engine. Based on the target product, find the {num_related} most similar products from the provided list of SKUs.
+
+Target Product: "{current_sku_or_title}"
+
+List of available SKUs:
+{', '.join(skus_to_search)}
+
+Return ONLY the SKUs of the most related products, separated by a pipe '|'. Do not include the target product in the result. If no products are related, return an empty string.
+"""
+        response = self._make_api_call(prompt)
+        if response and response != "API_CALL_FAILED":
+            potential_skus = [sku.strip() for sku in response.split('|')]
+            return [sku for sku in potential_skus if sku in skus_to_search]
+        return []
+
+    def generate_product_description_with_image(self, sku, image_name, image_bytes, mime_type):
+        prompt = """You are an expert product marketer. Analyze this product image to generate a product title and a compelling description.
+
+Instructions:
+1.  **Product Title**: Create a concise, SEO-friendly, and accurate title for the product in the image. If the image is unclear or you cannot confidently identify the product, return "Unknown Product".
+2.  **Product Description**: Write a marketing-friendly description of 80-120 words. Highlight key features and benefits. If the title is "Unknown Product", the description should be "Could not generate description from image.".
+
+Return the result as a single raw JSON object with two keys: "title" and "description". Do not wrap it in markdown or any other text.
+Example for a clear image: {"title": "Shan Achar Ghost Masala 50g", "description": "A delicious spice mix..."}
+Example for an unclear image: {"title": "Unknown Product", "description": "Could not generate description from image."}
+"""
+        if sku:
+            prompt += f"\n\nUse the following SKU for context: '{sku}'."
+        if image_name:
+            prompt += f" The original image file name is '{image_name}'."
+        
+        response_text = self._make_api_call(prompt, image_bytes=image_bytes, mime_type=mime_type)
+        
+        try:
+            clean_response = response_text.strip().lstrip('```json').rstrip('```').strip()
+            data = json.loads(clean_response)
+            return data
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            if response_text == "API_CALL_FAILED":
+                 return {"title": "API_CALL_FAILED", "description": "API_CALL_FAILED"}
+            return {"title": "", "description": response_text}
 
 def process_products(use_openai: bool = False):
     # Initialize the generator
