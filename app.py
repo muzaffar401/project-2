@@ -671,7 +671,11 @@ def main():
                         status_placeholder = st.empty()
                         error_placeholder = st.empty()
                         
-                        while True:
+                        # Use a different approach for monitoring without st.rerun()
+                        max_wait_time = 300  # 5 minutes max wait
+                        start_time = time.time()
+                        
+                        while time.time() - start_time < max_wait_time:
                             try:
                                 status = status_queue.get_nowait()
                                 if status['status'] == 'complete':
@@ -706,18 +710,47 @@ def main():
                                     unsafe_allow_html=True
                                 )
                                 
-                                # Auto-refresh the page every 5 seconds
-                                time.sleep(5)
-                                st.rerun()
-                                
                             except queue.Empty:
                                 # Check if processing is still running
                                 current_status = load_status()
                                 if current_status and current_status['status'] == 'complete':
-                                    st.rerun()
-                                time.sleep(1)
-                                continue
+                                    st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
+                                    with open('enriched_products.csv', 'rb') as f:
+                                        st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                                        st.download_button(
+                                            label="⬇️ Download Results",
+                                            data=f,
+                                            file_name="enriched_products.csv",
+                                            mime="text/csv",
+                                            key="download_sku"
+                                        )
+                                        st.markdown("</div>", unsafe_allow_html=True)
+                                    return
+                                elif current_status and current_status['status'] == 'error':
+                                    error_placeholder.markdown(
+                                        f"<div class='simple-error'>Error: {current_status.get('error', 'Unknown error')}</div>",
+                                        unsafe_allow_html=True
+                                    )
+                                    return
                                 
+                                # Show current status if available
+                                if current_status:
+                                    current = current_status.get('current', 0)
+                                    total = current_status.get('total', 0)
+                                    if isinstance(current, (int, float)) and isinstance(total, (int, float)) and total > 0:
+                                        progress = max(0, min(100, int((current / total) * 100)))
+                                        progress_placeholder.progress(progress)
+                                    
+                                    status_placeholder.markdown(
+                                        f"<span style='color:var(--primary-color);'>Processing product <b>{current}</b> of <b>{total}</b>: <b>{current_status.get('current_sku', '')}</b></span>",
+                                        unsafe_allow_html=True
+                                    )
+                                
+                                time.sleep(2)  # Check every 2 seconds
+                                continue
+                        
+                        # If we reach here, processing is taking too long
+                        st.markdown("<div class='simple-info'>Processing is taking longer than expected. Please check the status file or refresh the page.</div>", unsafe_allow_html=True)
                     except Exception as e:
                         st.markdown(f"<div class='simple-error'>An error occurred during processing: {str(e)}</div>", unsafe_allow_html=True)
         elif scenario == 'sku_image':
@@ -939,7 +972,12 @@ def main():
                         progress_placeholder = st.empty()
                         status_placeholder = st.empty()
                         error_placeholder = st.empty()
-                        while True:
+                        
+                        # Use a different approach for monitoring without st.rerun()
+                        max_wait_time = 300  # 5 minutes max wait
+                        start_time = time.time()
+                        
+                        while time.time() - start_time < max_wait_time:
                             try:
                                 status = status_queue.get_nowait()
                                 if status['status'] == 'complete':
@@ -954,7 +992,7 @@ def main():
                                             key="download_image"
                                         )
                                         st.markdown("</div>", unsafe_allow_html=True)
-                                    break
+                                    return
                                 elif status['status'] == 'error':
                                     error_placeholder.markdown(
                                         f"<div class='simple-error'>Error processing product {status['current_sku']}: {status['error']}</div>",
@@ -962,7 +1000,7 @@ def main():
                                     )
                                     # Stop the monitoring loop on critical error
                                     if "Image-SKU Mismatch" in status['error']:
-                                        break
+                                        return
                                     continue
                                 
                                 # Safely update progress bar
@@ -977,14 +1015,47 @@ def main():
                                     unsafe_allow_html=True
                                 )
                                 
-                                time.sleep(5)
-                                st.rerun()
                             except queue.Empty:
+                                # Check if processing is still running
                                 current_status = load_status()
                                 if current_status and current_status['status'] == 'complete':
-                                    st.rerun()
-                                time.sleep(1)
+                                    st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
+                                    with open('enriched_products_with_images.csv', 'rb') as f:
+                                        st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                                        st.download_button(
+                                            label="⬇️ Download Results",
+                                            data=f,
+                                            file_name="enriched_products_with_images.csv",
+                                            mime="text/csv",
+                                            key="download_image"
+                                        )
+                                        st.markdown("</div>", unsafe_allow_html=True)
+                                    return
+                                elif current_status and current_status['status'] == 'error':
+                                    error_placeholder.markdown(
+                                        f"<div class='simple-error'>Error: {current_status.get('error', 'Unknown error')}</div>",
+                                        unsafe_allow_html=True
+                                    )
+                                    return
+                                
+                                # Show current status if available
+                                if current_status:
+                                    current = current_status.get('current', 0)
+                                    total = current_status.get('total', 0)
+                                    if isinstance(current, (int, float)) and isinstance(total, (int, float)) and total > 0:
+                                        progress = max(0, min(100, int((current / total) * 100)))
+                                        progress_placeholder.progress(progress)
+                                    
+                                    status_placeholder.markdown(
+                                        f"<span style='color:var(--primary-color);'>Processing product <b>{current}</b> of <b>{total}</b>: <b>{current_status.get('current_sku', '')}</b></span>",
+                                        unsafe_allow_html=True
+                                    )
+                                
+                                time.sleep(2)  # Check every 2 seconds
                                 continue
+                        
+                        # If we reach here, processing is taking too long
+                        st.markdown("<div class='simple-info'>Processing is taking longer than expected. Please check the status file or refresh the page.</div>", unsafe_allow_html=True)
                     except Exception as e:
                         st.markdown(f"<div class='simple-error'>An error occurred during processing: {str(e)}</div>", unsafe_allow_html=True)
                         download_ready = False
