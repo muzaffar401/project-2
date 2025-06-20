@@ -99,12 +99,13 @@ def process_products_in_background(generator, df, image_name_mapping, output_fil
                     image_name = str(row['image_name'])
                 
                 image_file = image_name_mapping.get(image_name) if image_name and image_name_mapping else None
-                current_item_identifier = sku or image_name or f"row {i+1}"
+                current_item_identifier = sku or image_name or f"row {processed_count}"
 
                 # Update status
                 status = {
                     'current': processed_count, 'total': total_products,
-                    'current_sku': current_item_identifier, 'status': 'processing', 'error': None
+                    'current_sku': current_item_identifier, 'status': 'processing', 'error': None,
+                    'last_updated': datetime.datetime.now().isoformat()
                 }
                 status_queue.put(status)
                 save_status(status)
@@ -169,14 +170,12 @@ Now, perform the analysis for the provided SKU and image.
                         decision = validation_data.get("decision", "MISMATCH").upper()
 
                         if decision != "MATCH":
-                            # Provide a detailed error message for debugging
                             sku_cat = validation_data.get('sku_category', 'Unknown')
                             img_cat = validation_data.get('image_category', 'Unknown')
                             error_message = f"Image-SKU Mismatch for '{sku}'. AI decided categories do not match. SKU Category: '{sku_cat}', Image Category: '{img_cat}'."
                             raise ValueError(error_message)
 
                     except (json.JSONDecodeError, ValueError) as e:
-                        # Reraise the ValueError with the detailed message, or create a new one for JSON errors
                         if isinstance(e, ValueError):
                             raise e
                         else:
@@ -220,19 +219,22 @@ Now, perform the analysis for the provided SKU and image.
 
             except Exception as e:
                 error_message = str(e)
-                status = {'current': processed_count, 'total': total_products, 'current_sku': current_item_identifier, 'status': 'error', 'error': error_message}
+                status = {
+                    'current': processed_count, 'total': total_products, 'current_sku': current_item_identifier,
+                    'status': 'error', 'error': error_message, 'last_updated': datetime.datetime.now().isoformat()
+                }
                 status_queue.put(status)
                 save_status(status)
                 if "Image-SKU Mismatch" in error_message:
                     return
                 continue
 
-        final_status = {'current': total_products, 'total': total_products, 'status': 'complete', 'error': None}
+        final_status = {'current': total_products, 'total': total_products, 'status': 'complete', 'error': None, 'last_updated': datetime.datetime.now().isoformat()}
         status_queue.put(final_status)
         save_status(final_status)
 
     except Exception as e:
-        error_status = {'status': 'error', 'error': str(e)}
+        error_status = {'status': 'error', 'error': str(e), 'last_updated': datetime.datetime.now().isoformat()}
         status_queue.put(error_status)
         save_status(error_status)
 
@@ -442,7 +444,11 @@ st.markdown("""
 def process_dataframe(df):
     """Process dataframe to remove duplicates and prepare for analysis"""
     original_count = len(df)
-    df = df.drop_duplicates(subset=['sku'], keep='first')
+    if 'sku' in df.columns:
+        # Ensure SKU column is string type for proper duplicate removal
+        df['sku'] = df['sku'].astype(str)
+        df.dropna(subset=['sku'], inplace=True)
+        df = df.drop_duplicates(subset=['sku'], keep='first')
     cleaned_count = len(df)
     return df, original_count, cleaned_count
 
@@ -496,356 +502,150 @@ def display_processing_status():
     return False
 
 def main():
-    # Initialize session state at the very beginning
-    initialize_session_state()
-    
-    st.markdown("""
-        <div class='simple-title'>📝 Product Description Generator</div>
-        <div class='simple-subtitle'>Transform your product data into compelling descriptions using AI</div>
-    """, unsafe_allow_html=True)
+    st.markdown("<div class='simple-title'>📝 Product Description Generator</div>", unsafe_allow_html=True)
+    st.markdown("<div class='simple-subtitle'>Transform your product data into compelling descriptions using AI</div>", unsafe_allow_html=True)
 
-    # Add reset button in the top right
-    col1, col2, col3 = st.columns([1, 1, 1])
-    with col3:
-        if st.button("🔄 Reset All Data", type="secondary", help="Clear all processed files and start fresh"):
+    # --- Sidebar for Inputs ---
+    with st.sidebar:
+        st.markdown("## ⚙️ Configuration")
+        if st.button("🔄 Reset All Data & State"):
             reset_all_data()
-            st.success("✅ All data has been reset! Please refresh the page.")
+            st.success("✅ All data has been reset!")
+            time.sleep(1)
             st.rerun()
 
-    # Centered layout with two simple cards
-    col1, col2 = st.columns([1, 2], gap="large")
+        model_choice = st.selectbox("Choose AI Model", ("Gemini", "OpenAI"), help="Select the AI model.")
+        scenario = st.selectbox("Choose Input Type", ["Select your scenario", "Only Product SKUs", "Product SKUs with Image Names"])
 
-    with col1:
-        st.markdown("""
-            <div class='simple-card'>
-                <h2 style='color: var(--primary-color); font-weight: 700;'>📋 Input Options</h2>
-            </div>
-        """, unsafe_allow_html=True)
+        # Initialize session state for processing
+        if 'processing' not in st.session_state:
+            st.session_state.processing = False
+        if 'output_file' not in st.session_state:
+            st.session_state.output_file = ''
+
+    # --- Main Area ---
+
+    # If a process is active, show the monitoring UI
+    if st.session_state.get('processing', False):
+        st.info("Processing is in progress. You can switch tabs; the process will continue in the background.")
         
-        # Add model selection
-        model_choice = st.selectbox(
-            "Choose AI Model",
-            ("Gemini", "OpenAI"),
-            index=0, # Default to Gemini
-            key="model_select",
-            help="Select the AI model. For OpenAI, ensure a valid API key is in your .env file."
-        )
+        progress_bar = st.progress(0, text="Waiting for progress...")
+        status_text = st.empty()
+        error_placeholder = st.empty()
+        
+        status = load_status()
 
-        scenario_options = [
-            "Select your scenario",
-            "Only Product SKUs",
-            "Product SKUs with Image Names"
-        ]
-        scenario = st.selectbox(
-            "Choose Input Type",
-            scenario_options,
-            index=0,
-            key="scenario_select",
-            help="Select how you want to provide your product information"
-        )
+        if status:
+            current = status.get('current', 0)
+            total = status.get('total', 1)
+            progress_bar.progress(current / total if total > 0 else 0, text=f"Processing item {current} of {total}")
+            status_text.text(f"Current Item: {status.get('current_sku', 'Starting...')}")
 
-    with col2:
+            if status.get('status') == 'error':
+                error_placeholder.error(f"Error on product {status.get('current_sku', 'N/A')}: {status.get('error', 'Unknown')}")
+                if "Image-SKU Mismatch" in str(status.get('error')):
+                    st.error("Processing stopped due to a critical mismatch error.")
+                st.session_state.processing = False
+
+            elif status.get('status') == 'complete':
+                st.success("✅ Processing completed successfully!")
+                if os.path.exists(st.session_state.output_file):
+                    with open(st.session_state.output_file, 'rb') as f:
+                        st.download_button("⬇️ Download Final Results", f, os.path.basename(st.session_state.output_file), "text/csv", key="download_final_complete")
+                st.session_state.processing = False
+        
+        if st.session_state.get('processing', False):
+             time.sleep(3)
+             st.rerun()
+
+    # If no process is active, show the configuration UI
+    else:
         if scenario == "Select your scenario":
-            st.markdown("""
-                <div class='simple-info'>
-                    <b>👉 Please select a scenario to begin</b><br>
-                    Choose how you want to provide your product information to get started.
-                </div>
-            """, unsafe_allow_html=True)
+            st.info("👈 Please select a scenario from the sidebar to begin.")
             return
-        if scenario == "Only Product SKUs":
-            st.markdown("<div class='simple-card'><h3 style='color:var(--primary-color);'>📤 Upload Product Data</h3>", unsafe_allow_html=True)
-            uploaded_file = st.file_uploader(
-                "Upload your product SKUs file",
-                type=['xlsx', 'xls', 'csv'],
-                help="Upload a file containing your product SKUs",
-                key="sku_file",
-                label_visibility="collapsed"
-            )
-            st.markdown("</div>", unsafe_allow_html=True)
-            if uploaded_file is not None:
-                try:
-                    if uploaded_file.name.endswith('.csv'):
-                        df = pd.read_csv(uploaded_file)
-                    else:
-                        df = pd.read_excel(uploaded_file)
-                    st.session_state['df'] = df
-                    st.session_state['scenario'] = 'sku_only'
-                    st.success("✅ File uploaded successfully!")
-                except Exception as e:
-                    st.markdown(f"<div class='simple-error'>❌ Error reading file: {str(e)}</div>", unsafe_allow_html=True)
-                    return
-        else:
-            st.markdown("<div class='simple-card'><h3 style='color:var(--primary-color);'>📤 Upload Product Data & Images</h3>", unsafe_allow_html=True)
-            uploaded_file = st.file_uploader(
-                "Upload file with SKUs and Image Names",
-                type=['xlsx', 'xls', 'csv'],
-                help="Upload a file containing SKUs and corresponding image names",
-                key="sku_img_file",
-                label_visibility="collapsed"
-            )
-            uploaded_images = st.file_uploader(
-                "Upload Product Images",
-                type=["jpg", "jpeg", "png", "webp", "bmp"],
-                accept_multiple_files=True,
-                help="Upload all product images (no ZIP support)",
-                key="img_files",
-                label_visibility="collapsed"
-            )
-            st.session_state['uploaded_images'] = uploaded_images
-            st.markdown("</div>", unsafe_allow_html=True)
-            if uploaded_file is not None:
-                try:
-                    if uploaded_file.name.endswith('.csv'):
-                        df = pd.read_csv(uploaded_file)
-                    else:
-                        df = pd.read_excel(uploaded_file)
-                    st.session_state['df'] = df
-                    st.session_state['scenario'] = 'sku_image'
-                    st.session_state['uploaded_images'] = uploaded_images
-                    st.success("✅ File uploaded successfully!")
-                except Exception as e:
-                    st.markdown(f"<div class='simple-error'>❌ Error reading file: {str(e)}</div>", unsafe_allow_html=True)
-                    return
 
-    # Data Processing Section
-    if 'df' in st.session_state and 'scenario' in st.session_state:
-        df = st.session_state['df']
-        scenario = st.session_state['scenario']
-        st.markdown("""
-            <div class='simple-card' style='margin-top: 32px;'>
-                <h3 style='color:var(--primary-color);'>📊 Data Processing</h3>
-            </div>
-        """, unsafe_allow_html=True)
-        
-        if scenario == 'sku_only':
-            if 'sku' not in df.columns:
-                st.markdown("<div class='simple-error'>❌ The file must contain a 'sku' column!</div>", unsafe_allow_html=True)
+        # Common file uploader logic
+        uploaded_file = st.file_uploader("Upload your product data file", type=['xlsx', 'xls', 'csv'], key=f"uploader_{scenario}")
+        uploaded_images = None
+        if scenario == "Product SKUs with Image Names":
+            uploaded_images = st.file_uploader("Upload Product Images", type=["jpg", "jpeg", "png", "webp", "bmp"], accept_multiple_files=True, key="img_files")
+
+        if uploaded_file:
+            try:
+                df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+                st.session_state.df = df
+                st.session_state.scenario = scenario
+                if uploaded_images:
+                    st.session_state.uploaded_images = uploaded_images
+                st.success("✅ File(s) loaded successfully. Ready to process.")
+            except Exception as e:
+                st.error(f"❌ Error reading file: {e}")
                 return
-            cleaned_df, original_count, cleaned_count = process_dataframe(df)
-            st.markdown(f"""
-                <div class='stats-bar'>
-                    <div class='stat-card'>
-                        <span class='stat-icon'>📦</span>
-                        <div>
-                            <div class='stat-label'>Original number of products</div>
-                            <div class='stat-value'>{original_count}</div>
-                        </div>
-                    </div>
-                    <div class='stat-card'>
-                        <span class='stat-icon'>✅</span>
-                        <div>
-                            <div class='stat-label'>After removing duplicates</div>
-                            <div class='stat-value'>{cleaned_count}</div>
-                        </div>
-                    </div>
-                    <div class='stat-card'>
-                        <span class='stat-icon'>🗑️</span>
-                        <div>
-                            <div class='stat-label'>Duplicates removed</div>
-                            <div class='stat-value'>{original_count - cleaned_count}</div>
-                        </div>
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
-            
-            # Check if processing is already running
-            if st.session_state.processing_started:
-                display_processing_status()
-            else:
-                if st.button("Start Processing", key="start_btn", type="primary"):
-                    # Always start fresh when the button is clicked.
-                    reset_all_data()
-                    
-                    with st.spinner("Initializing processing..."):
-                        try:
-                            # Use model based on user's choice
-                            use_openai = (model_choice == "OpenAI")
 
-                            # Check for API key presence if selected
-                            if use_openai and not os.getenv("OPENAI_API_KEY"):
-                                st.markdown("<div class='simple-error'>❌ OpenAI API key is missing! Please add it to your .env file.</div>", unsafe_allow_html=True)
-                                return
-                            if not use_openai and not os.getenv("GEMINI_API_KEY"):
-                                st.markdown("<div class='simple-error'>❌ Gemini API key is missing! Please add it to your .env file.</div>", unsafe_allow_html=True)
-                                return
+        if 'df' in st.session_state:
+            df = st.session_state.df
+            st.header("📊 Data Preview & Validation")
 
-                            generator = ProductDescriptionGenerator(use_openai=use_openai)
-                            
-                            merged_df = cleaned_df.copy()
-                            merged_df['description'] = ''
-                            merged_df['related_products'] = ''
-
-                            to_process = merged_df
-                            total_to_process = len(to_process)
-                            
-                            if total_to_process == 0:
-                                st.markdown("<div class='simple-info'>All products have already been processed!</div>", unsafe_allow_html=True)
-                                return
-                            
-                            # Initialize status
-                            initial_status = {
-                                'current': 0,
-                                'total': total_to_process,
-                                'current_sku': None,
-                                'status': 'starting',
-                                'error': None,
-                                'last_updated': datetime.datetime.now().isoformat()
-                            }
-                            save_status(initial_status)
-                            
-                            # Start background processing
-                            st.session_state.processing_started = True
-                            thread = threading.Thread(
-                                target=process_products_in_background,
-                                args=(generator, to_process, {}, 'enriched_products.csv', st.session_state.status_queue)
-                            )
-                            thread.daemon = True
-                            thread.start()
-                            st.session_state.processing_thread = thread
-                            
-                            st.rerun()
-
-                        except Exception as e:
-                            st.markdown(f"<div class='simple-error'>An error occurred during initialization: {str(e)}</div>", unsafe_allow_html=True)
-        
-        elif scenario == 'sku_image':
-            if 'sku' not in df.columns or 'image_name' not in df.columns:
-                st.markdown("<div class='simple-error'>❌ The file must contain both 'sku' and 'image_name' columns!</div>", unsafe_allow_html=True)
-                return
-            uploaded_images = st.session_state.get('uploaded_images', None)
-            if not uploaded_images or len(uploaded_images) == 0:
-                st.markdown("<div class='simple-info'>Please upload all product images before starting processing.</div>", unsafe_allow_html=True)
+            required_cols = {'sku': ['Only Product SKUs', 'Product SKUs with Image Names'], 'image_name': ['Product SKUs with Image Names']}
+            missing_cols = [col for col, scenarios in required_cols.items() if scenario in scenarios and col not in df.columns]
+            if missing_cols:
+                st.error(f"❌ Your file is missing the required column(s) for this scenario: {', '.join(missing_cols)}")
                 return
             
-            # Create a mapping of image names without extensions to actual uploaded files
             image_name_mapping = {}
-            for img in uploaded_images:
-                base_name = os.path.splitext(img.name)[0]
-                image_name_mapping[base_name] = img
+            if scenario == 'Product SKUs with Image Names':
+                uploaded_images = st.session_state.get('uploaded_images', [])
+                if not uploaded_images:
+                    st.warning("Please upload product images to proceed.")
+                    return
+                for img in uploaded_images:
+                    base_name = os.path.splitext(img.name)[0]
+                    image_name_mapping[base_name] = img
+                image_name_set = {str(x) for x in df['image_name'] if pd.notna(x) and str(x).strip()}
+                missing_images = image_name_set - set(image_name_mapping.keys())
+                if missing_images:
+                    st.error(f"Missing images referenced in your file: {', '.join(missing_images)}")
+                    return
 
-            # Only check for missing images for rows where image_name is present and not blank/NaN
-            if 'image_name' in df.columns:
-                image_name_set = set(str(x) for x in df['image_name'] if pd.notna(x) and str(x).strip() != '')
-                uploaded_image_bases = set(image_name_mapping.keys())
-                missing_images = image_name_set - uploaded_image_bases
-            else:
-                missing_images = set()
-
-            st.markdown(f"<div class='simple-info'>Total products: <b>{len(df)}</b><br>Total images uploaded: <b>{len(uploaded_images)}</b>" + (f"<br>Image matching: <b>{len(image_name_set)}</b> required, <b>{len(uploaded_image_bases)}</b> found" if 'image_name' in df.columns else "") + "</div>", unsafe_allow_html=True)
-            if missing_images:
-                st.markdown(f"<div class='simple-error'>The following images are missing in the uploaded files: {', '.join(missing_images)}</div>", unsafe_allow_html=True)
-                return
             cleaned_df, original_count, cleaned_count = process_dataframe(df)
-            st.markdown(f"""
-                <div class='stats-bar'>
-                    <div class='stat-card'>
-                        <span class='stat-icon'>📦</span>
-                        <div>
-                            <div class='stat-label'>Original number of products</div>
-                            <div class='stat-value'>{original_count}</div>
-                        </div>
-                    </div>
-                    <div class='stat-card'>
-                        <span class='stat-icon'>✅</span>
-                        <div>
-                            <div class='stat-label'>After removing duplicates</div>
-                            <div class='stat-value'>{cleaned_count}</div>
-                        </div>
-                    </div>
-                    <div class='stat-card'>
-                        <span class='stat-icon'>🗑️</span>
-                        <div>
-                            <div class='stat-label'>Duplicates removed</div>
-                            <div class='stat-value'>{original_count - cleaned_count}</div>
-                        </div>
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
+            st.write(f"Your data contains **{original_count}** products. After removing duplicates (based on SKU), **{cleaned_count}** products will be processed.")
             
-            # Check if processing is already running
-            if st.session_state.processing_started:
-                display_processing_status()
-            else:
-                if st.button("Start Processing", key="start_btn_img", type="primary"):
-                    # Always start fresh when the button is clicked.
-                    reset_all_data()
+            if st.button("🚀 Start Processing", type="primary"):
+                output_file = 'enriched_products_with_images.csv' if scenario == 'Product SKUs with Image Names' else 'enriched_products.csv'
+                if os.path.exists(STATUS_FILE): os.remove(STATUS_FILE)
+                if os.path.exists(output_file): os.remove(output_file)
+                
+                try:
+                    use_openai = (model_choice == "OpenAI")
+                    if (use_openai and not os.getenv("OPENAI_API_KEY")) or (not use_openai and not os.getenv("GEMINI_API_KEY")):
+                        st.error(f"❌ {model_choice} API key is missing! Please add it to your .env file.")
+                        return
+
+                    generator = ProductDescriptionGenerator(use_openai=use_openai)
+                    to_process = cleaned_df.copy()
                     
-                    with st.spinner("Initializing processing..."):
-                        try:
-                            # Use model based on user's choice
-                            use_openai = (model_choice == "OpenAI")
+                    status_queue = queue.Queue()
+                    thread = threading.Thread(target=process_products_in_background, args=(generator, to_process, image_name_mapping, output_file, status_queue))
+                    thread.daemon = True
+                    thread.start()
+                    
+                    st.session_state.processing = True
+                    st.session_state.output_file = output_file
+                    st.rerun()
 
-                            # Check for API key presence if selected
-                            if use_openai and not os.getenv("OPENAI_API_KEY"):
-                                st.markdown("<div class='simple-error'>❌ OpenAI API key is missing! Please add it to your .env file.</div>", unsafe_allow_html=True)
-                                return
-                            if not use_openai and not os.getenv("GEMINI_API_KEY"):
-                                st.markdown("<div class='simple-error'>❌ Gemini API key is missing! Please add it to your .env file.</div>", unsafe_allow_html=True)
-                                return
+                except Exception as e:
+                    st.error(f"An unexpected error occurred before processing could start: {e}")
 
-                            generator = ProductDescriptionGenerator(use_openai=use_openai)
-                            
-                            merged_df = cleaned_df.copy()
-                            merged_df['description'] = ''
-                            merged_df['related_products'] = ''
-
-                            to_process = merged_df
-                            total_to_process = len(to_process)
-                            
-                            if total_to_process == 0:
-                                st.markdown("<div class='simple-info'>All products have already been processed!</div>", unsafe_allow_html=True)
-                                return
-                            
-                            # Initialize status
-                            initial_status = {
-                                'current': 0,
-                                'total': total_to_process,
-                                'current_sku': None,
-                                'status': 'starting',
-                                'error': None,
-                                'last_updated': datetime.datetime.now().isoformat()
-                            }
-                            save_status(initial_status)
-                            
-                            # Start background processing
-                            st.session_state.processing_started = True
-                            thread = threading.Thread(
-                                target=process_products_in_background,
-                                args=(generator, to_process, image_name_mapping, 'enriched_products_with_images.csv', st.session_state.status_queue)
-                            )
-                            thread.daemon = True
-                            thread.start()
-                            st.session_state.processing_thread = thread
-                            
-                            st.rerun()
-
-                        except Exception as e:
-                            st.markdown(f"<div class='simple-error'>An error occurred during initialization: {str(e)}</div>", unsafe_allow_html=True)
-
-    # --- Always show download button if output file exists (for user reliability) ---
-    if os.path.exists('enriched_products.csv'):
-        last_modified = datetime.datetime.fromtimestamp(os.path.getmtime('enriched_products.csv')).strftime('%Y-%m-%d %H:%M:%S')
-        st.markdown(f"<div class='styled-download'><b>✅ A completed results file was found (last updated: {last_modified}).</b><br>You can download it below:</div>", unsafe_allow_html=True)
-        with open('enriched_products.csv', 'rb') as f:
-            st.download_button(
-                label="⬇️ Download Results (SKU Only)",
-                data=f,
-                file_name="enriched_products.csv",
-                mime="text/csv",
-                key="download_sku_always"
-            )
-    if os.path.exists('enriched_products_with_images.csv'):
-        last_modified = datetime.datetime.fromtimestamp(os.path.getmtime('enriched_products_with_images.csv')).strftime('%Y-%m-%d %H:%M:%S')
-        st.markdown(f"<div class='styled-download'><b>✅ A completed results file with images was found (last updated: {last_modified}).</b><br>You can download it below:</div>", unsafe_allow_html=True)
-        with open('enriched_products_with_images.csv', 'rb') as f:
-            st.download_button(
-                label="⬇️ Download Results (With Images)",
-                data=f,
-                file_name="enriched_products_with_images.csv",
-                mime="text/csv",
-                key="download_image_always"
-            )
+    st.markdown("---")
+    st.markdown("### 🗂️ Available Download Files")
+    found_files = False
+    for f_name in ['enriched_products.csv', 'enriched_products_with_images.csv']:
+        if os.path.exists(f_name):
+            found_files = True
+            with open(f_name, 'rb') as f:
+                st.download_button(f"⬇️ Download {f_name}", f, f_name, "text/csv", key=f"download_always_{f_name}")
+    if not found_files:
+        st.caption("No processed files found yet.")
 
 if __name__ == "__main__":
     main()
