@@ -438,43 +438,13 @@ def process_dataframe(df):
     cleaned_count = len(df)
     return df, original_count, cleaned_count
 
-def poll_status_and_update_ui(processing_file, download_label):
-    status_data = load_status()
-    if status_data:
-        current = status_data.get('current', 0)
-        total = status_data.get('total', 0)
-        status = status_data.get('status', '')
-        error = status_data.get('error', None)
-        current_sku = status_data.get('current_sku', '')
-        if total > 0:
-            progress = max(0, min(100, int((current / total) * 100)))
-            st.progress(progress)
-        if status == 'complete':
-            st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
-            if os.path.exists(processing_file):
-                with open(processing_file, 'rb') as f:
-                    st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
-                    st.download_button(
-                        label=download_label,
-                        data=f,
-                        file_name=os.path.basename(processing_file),
-                        mime="text/csv",
-                        key="download_final"
-                    )
-                    st.markdown("</div>", unsafe_allow_html=True)
-        elif status == 'error':
-            st.markdown(f"<div class='simple-error'>Error processing product {current_sku}: {error}</div>", unsafe_allow_html=True)
-        elif status in ['starting', 'processing']:
-            st.markdown(f"<span style='color:var(--primary-color);'>Processing product <b>{current}</b> of <b>{total}</b>: <b>{current_sku}</b></span>", unsafe_allow_html=True)
-            time.sleep(2)
-            st.experimental_rerun()
-
 def main():
     st.markdown("""
         <div class='simple-title'>📝 Product Description Generator</div>
         <div class='simple-subtitle'>Transform your product data into compelling descriptions using AI</div>
     """, unsafe_allow_html=True)
 
+    # Add reset button in the top right
     col1, col2, col3 = st.columns([1, 1, 1])
     with col3:
         if st.button("🔄 Reset All Data", type="secondary", help="Clear all processed files and start fresh"):
@@ -482,6 +452,10 @@ def main():
             st.success("✅ All data has been reset! Please refresh the page.")
             st.rerun()
 
+    # The check for an ongoing process has been removed for reliability.
+    # Each processing task now starts fresh.
+
+    # Centered layout with two simple cards
     col1, col2 = st.columns([1, 2], gap="large")
 
     with col1:
@@ -490,13 +464,16 @@ def main():
                 <h2 style='color: var(--primary-color); font-weight: 700;'>📋 Input Options</h2>
             </div>
         """, unsafe_allow_html=True)
+        
+        # Add model selection
         model_choice = st.selectbox(
             "Choose AI Model",
             ("Gemini", "OpenAI"),
-            index=0,
+            index=0, # Default to Gemini
             key="model_select",
             help="Select the AI model. For OpenAI, ensure a valid API key is in your .env file."
         )
+
         scenario_options = [
             "Select your scenario",
             "Only Product SKUs",
@@ -558,6 +535,8 @@ def main():
                 key="img_files",
                 label_visibility="collapsed"
             )
+            # Do not show image names below the uploader anymore
+            # Use uploaded_images for further processing
             st.session_state['uploaded_images'] = uploaded_images
             st.markdown("</div>", unsafe_allow_html=True)
             if uploaded_file is not None:
@@ -613,8 +592,141 @@ def main():
                     </div>
                 </div>
             """, unsafe_allow_html=True)
-            processing_file = 'enriched_products.csv'
-            poll_status_and_update_ui(processing_file, "⬇️ Download Results")
+            total_products = len(cleaned_df)
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            if st.button("Start Processing", key="start_btn", type="primary"):
+                # Always start fresh when the button is clicked.
+                if os.path.exists('processing_status.json'):
+                    os.remove('processing_status.json')
+                if os.path.exists('enriched_products.csv'):
+                    os.remove('enriched_products.csv')
+                
+                with st.spinner("Processing products..."):
+                    try:
+                        # Use model based on user's choice
+                        use_openai = (model_choice == "OpenAI")
+
+                        # Check for API key presence if selected
+                        if use_openai and not os.getenv("OPENAI_API_KEY"):
+                            st.markdown("<div class='simple-error'>❌ OpenAI API key is missing! Please add it to your .env file.</div>", unsafe_allow_html=True)
+                            return
+                        if not use_openai and not os.getenv("GEMINI_API_KEY"):
+                            st.markdown("<div class='simple-error'>❌ Gemini API key is missing! Please add it to your .env file.</div>", unsafe_allow_html=True)
+                            return
+
+                        generator = ProductDescriptionGenerator(use_openai=use_openai)
+                        
+                        # This section should not try to load old files, as we are starting fresh
+                        merged_df = cleaned_df.copy()
+                        merged_df['description'] = ''
+                        merged_df['related_products'] = ''
+                        
+                        to_process = merged_df
+                        total_to_process = len(to_process)
+                        
+                        if total_to_process == 0:
+                            st.markdown("<div class='simple-info'>All products have already been processed!</div>", unsafe_allow_html=True)
+                            with open('enriched_products.csv', 'rb') as f:
+                                st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                                st.download_button(
+                                    label="⬇️ Download Results",
+                                    data=f,
+                                    file_name="enriched_products.csv",
+                                    mime="text/csv",
+                                    key="download_sku"
+                                )
+                                st.markdown("</div>", unsafe_allow_html=True)
+                            return
+                        
+                        # Initialize status
+                        status_queue = queue.Queue()
+                        initial_status = {
+                            'current': 0,
+                            'total': total_to_process,
+                            'current_sku': None,
+                            'status': 'starting',
+                            'error': None,
+                            'last_updated': datetime.datetime.now().isoformat()
+                        }
+                        save_status(initial_status)
+                        
+                        # Start background processing
+                        thread = threading.Thread(
+                            target=process_products_in_background,
+                            args=(generator, to_process, {}, 'enriched_products.csv', status_queue)
+                        )
+                        thread.daemon = True
+                        thread.start()
+                        
+                        # Monitor progress with auto-refresh
+                        progress_placeholder = st.empty()
+                        status_placeholder = st.empty()
+                        error_placeholder = st.empty()
+                        while thread.is_alive():
+                            try:
+                                status = status_queue.get_nowait()
+                                if status['status'] == 'complete':
+                                    st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
+                                    with open('enriched_products.csv', 'rb') as f:
+                                        st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                                        st.download_button(
+                                            label="⬇️ Download Results",
+                                            data=f,
+                                            file_name="enriched_products.csv",
+                                            mime="text/csv",
+                                            key="download_sku"
+                                        )
+                                        st.markdown("</div>", unsafe_allow_html=True)
+                                    break
+                                elif status['status'] == 'error':
+                                    error_placeholder.markdown(
+                                        f"<div class='simple-error'>Error processing product {status['current_sku']}: {status['error']}</div>",
+                                        unsafe_allow_html=True
+                                    )
+                                    # Stop the monitoring loop on critical error
+                                    if "Image-SKU Mismatch" in status['error']:
+                                        break
+                                    continue
+                                
+                                # Safely update progress bar
+                                current = status.get('current')
+                                total = status.get('total')
+                                if isinstance(current, (int, float)) and isinstance(total, (int, float)) and total > 0:
+                                    progress = max(0, min(100, int((current / total) * 100)))
+                                    progress_placeholder.progress(progress)
+                                
+                                status_placeholder.markdown(
+                                    f"<span style='color:var(--primary-color);'>Processing product <b>{status.get('current', 0)}</b> of <b>{status.get('total', 0)}</b>: <b>{status.get('current_sku', '')}</b></span>",
+                                    unsafe_allow_html=True
+                                )
+                                
+                                time.sleep(1)
+                            except queue.Empty:
+                                time.sleep(1)
+                                continue
+                        
+                        final_status = load_status()
+                        if final_status and final_status['status'] == 'complete':
+                                st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
+                                with open('enriched_products.csv', 'rb') as f:
+                                    st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                                    st.download_button(
+                                        label="⬇️ Download Results",
+                                        data=f,
+                                        file_name="enriched_products.csv",
+                                        mime="text/csv",
+                                        key="download_sku_final"
+                                    )
+                                    st.markdown("</div>", unsafe_allow_html=True)
+                        elif final_status and final_status['status'] == 'error':
+                            error_placeholder.markdown(
+                                f"<div class='simple-error'>Error processing product {final_status['current_sku']}: {final_status['error']}</div>",
+                                unsafe_allow_html=True
+                            )
+
+                    except Exception as e:
+                        st.markdown(f"<div class='simple-error'>An error occurred during processing: {str(e)}</div>", unsafe_allow_html=True)
         elif scenario == 'sku_image':
             if 'sku' not in df.columns or 'image_name' not in df.columns:
                 st.markdown("<div class='simple-error'>❌ The file must contain both 'sku' and 'image_name' columns!</div>", unsafe_allow_html=True)
@@ -623,16 +735,21 @@ def main():
             if not uploaded_images or len(uploaded_images) == 0:
                 st.markdown("<div class='simple-info'>Please upload all product images before starting processing.</div>", unsafe_allow_html=True)
                 return
+            
+            # Create a mapping of image names without extensions to actual uploaded files
             image_name_mapping = {}
             for img in uploaded_images:
                 base_name = os.path.splitext(img.name)[0]
                 image_name_mapping[base_name] = img
+
+            # Only check for missing images for rows where image_name is present and not blank/NaN
             if 'image_name' in df.columns:
                 image_name_set = set(str(x) for x in df['image_name'] if pd.notna(x) and str(x).strip() != '')
                 uploaded_image_bases = set(image_name_mapping.keys())
                 missing_images = image_name_set - uploaded_image_bases
             else:
                 missing_images = set()
+
             st.markdown(f"<div class='simple-info'>Total products: <b>{len(df)}</b><br>Total images uploaded: <b>{len(uploaded_images)}</b>" + (f"<br>Image matching: <b>{len(image_name_set)}</b> required, <b>{len(uploaded_image_bases)}</b> found" if 'image_name' in df.columns else "") + "</div>", unsafe_allow_html=True)
             if missing_images:
                 st.markdown(f"<div class='simple-error'>The following images are missing in the uploaded files: {', '.join(missing_images)}</div>", unsafe_allow_html=True)
@@ -663,8 +780,154 @@ def main():
                     </div>
                 </div>
             """, unsafe_allow_html=True)
-            processing_file = 'enriched_products_with_images.csv'
-            poll_status_and_update_ui(processing_file, "⬇️ Download Results (With Images)")
+            total_products = len(cleaned_df)
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            download_ready = False
+            if st.button("Start Processing", key="start_btn_img", type="primary"):
+                # Always start fresh when the button is clicked.
+                if os.path.exists('processing_status.json'):
+                    os.remove('processing_status.json')
+                if os.path.exists('enriched_products_with_images.csv'):
+                    os.remove('enriched_products_with_images.csv')
+                    
+                with st.spinner("Processing products with images..."):
+                    try:
+                        # Use model based on user's choice
+                        use_openai = (model_choice == "OpenAI")
+
+                        # Check for API key presence if selected
+                        if use_openai and not os.getenv("OPENAI_API_KEY"):
+                            st.markdown("<div class='simple-error'>❌ OpenAI API key is missing! Please add it to your .env file.</div>", unsafe_allow_html=True)
+                            return
+                        if not use_openai and not os.getenv("GEMINI_API_KEY"):
+                            st.markdown("<div class='simple-error'>❌ Gemini API key is missing! Please add it to your .env file.</div>", unsafe_allow_html=True)
+                            return
+
+                        generator = ProductDescriptionGenerator(use_openai=use_openai)
+                        
+                        # This section should not try to load old files, as we are starting fresh
+                        merged_df = cleaned_df.copy()
+                        merged_df['description'] = ''
+                        merged_df['related_products'] = ''
+
+                        to_process = merged_df
+                        total_to_process = len(to_process)
+                        
+                        if total_to_process == 0:
+                            st.markdown("<div class='simple-info'>All products have already been processed!</div>", unsafe_allow_html=True)
+                            with open('enriched_products_with_images.csv', 'rb') as f:
+                                st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                                st.download_button(
+                                    label="⬇️ Download Results",
+                                    data=f,
+                                    file_name="enriched_products_with_images.csv",
+                                    mime="text/csv",
+                                    key="download_image"
+                                )
+                                st.markdown("</div>", unsafe_allow_html=True)
+                            return
+                        
+                        # Initialize status
+                        status_queue = queue.Queue()
+                        initial_status = {
+                            'current': 0,
+                            'total': total_to_process,
+                            'current_sku': None,
+                            'status': 'starting',
+                            'error': None,
+                            'last_updated': datetime.datetime.now().isoformat()
+                        }
+                        save_status(initial_status)
+                        
+                        # Start background processing
+                        thread = threading.Thread(
+                            target=process_products_in_background,
+                            args=(generator, to_process, image_name_mapping, 'enriched_products_with_images.csv', status_queue)
+                        )
+                        thread.daemon = True
+                        thread.start()
+                        
+                        # Monitor progress with auto-refresh
+                        progress_placeholder = st.empty()
+                        status_placeholder = st.empty()
+                        error_placeholder = st.empty()
+                        while thread.is_alive():
+                            try:
+                                status = status_queue.get_nowait()
+                                if status['status'] == 'complete':
+                                    st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
+                                    with open('enriched_products_with_images.csv', 'rb') as f:
+                                        st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                                        st.download_button(
+                                            label="⬇️ Download Results",
+                                            data=f,
+                                            file_name="enriched_products_with_images.csv",
+                                            mime="text/csv",
+                                            key="download_image"
+                                        )
+                                        st.markdown("</div>", unsafe_allow_html=True)
+                                    break
+                                elif status['status'] == 'error':
+                                    error_placeholder.markdown(
+                                        f"<div class='simple-error'>Error processing product {status['current_sku']}: {status['error']}</div>",
+                                        unsafe_allow_html=True
+                                    )
+                                    # Stop the monitoring loop on critical error
+                                    if "Image-SKU Mismatch" in status['error']:
+                                        break
+                                    continue
+                                
+                                # Safely update progress bar
+                                current = status.get('current')
+                                total = status.get('total')
+                                if isinstance(current, (int, float)) and isinstance(total, (int, float)) and total > 0:
+                                    progress = max(0, min(100, int((current / total) * 100)))
+                                    progress_placeholder.progress(progress)
+                                
+                                status_placeholder.markdown(
+                                    f"<span style='color:var(--primary-color);'>Processing product <b>{status.get('current', 0)}</b> of <b>{status.get('total', 0)}</b>: <b>{status.get('current_sku', '')}</b></span>",
+                                    unsafe_allow_html=True
+                                )
+                                
+                                time.sleep(1)
+                            except queue.Empty:
+                                time.sleep(1)
+                                continue
+                        
+                        final_status = load_status()
+                        if final_status and final_status['status'] == 'complete':
+                                st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
+                                with open('enriched_products_with_images.csv', 'rb') as f:
+                                    st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                                    st.download_button(
+                                        label="⬇️ Download Results",
+                                        data=f,
+                                        file_name="enriched_products_with_images.csv",
+                                        mime="text/csv",
+                                        key="download_image_final"
+                                    )
+                                    st.markdown("</div>", unsafe_allow_html=True)
+                        elif final_status and final_status['status'] == 'error':
+                            error_placeholder.markdown(
+                                f"<div class='simple-error'>Error processing product {final_status['current_sku']}: {final_status['error']}</div>",
+                                unsafe_allow_html=True
+                            )
+
+                    except Exception as e:
+                        st.markdown(f"<div class='simple-error'>An error occurred during processing: {str(e)}</div>", unsafe_allow_html=True)
+                        
+            if os.path.exists('enriched_products_with_images.csv'):
+                with open('enriched_products_with_images.csv', 'rb') as f:
+                    st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
+                    st.download_button(
+                        label="⬇️ Download Results",
+                        data=f,
+                        file_name="enriched_products_with_images.csv",
+                        mime="text/csv",
+                        key="download_image_existing"
+                    )
+                    st.markdown("</div>", unsafe_allow_html=True)
 
     # --- Always show download button if output file exists (for user reliability) ---
     if os.path.exists('enriched_products.csv'):
