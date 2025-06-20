@@ -256,12 +256,18 @@ def reset_all_data():
             print(f"Error removing {file_path}: {str(e)}")
     
     # Clear session state
-    if 'df' in st.session_state:
-        del st.session_state['df']
-    if 'scenario' in st.session_state:
-        del st.session_state['scenario']
-    if 'uploaded_images' in st.session_state:
-        del st.session_state['uploaded_images']
+    st.session_state.clear()
+
+def initialize_session_state():
+    """Initialize all required session state variables"""
+    if 'processing_thread' not in st.session_state:
+        st.session_state.processing_thread = None
+    if 'status_queue' not in st.session_state:
+        st.session_state.status_queue = queue.Queue()
+    if 'processing_started' not in st.session_state:
+        st.session_state.processing_started = False
+    if 'last_status_check' not in st.session_state:
+        st.session_state.last_status_check = 0
 
 # Simple, modern, theme-adaptive CSS
 st.markdown("""
@@ -438,43 +444,65 @@ def process_dataframe(df):
     cleaned_count = len(df)
     return df, original_count, cleaned_count
 
-def poll_status_and_update_ui(processing_file, download_label):
-    status_data = load_status()
-    if status_data:
-        current = status_data.get('current', 0)
-        total = status_data.get('total', 0)
-        status = status_data.get('status', '')
-        error = status_data.get('error', None)
-        current_sku = status_data.get('current_sku', '')
-        if total > 0:
-            progress = max(0, min(100, int((current / total) * 100)))
+def check_processing_status():
+    """Check the current processing status from the queue and file"""
+    current_time = time.time()
+    # Only check status file if it's been at least 1 second since last check
+    if current_time - st.session_state.last_status_check > 1:
+        st.session_state.last_status_check = current_time
+        # Check both the queue and the status file
+        try:
+            # Check queue first
+            while True:
+                status = st.session_state.status_queue.get_nowait()
+                save_status(status)
+                if status['status'] in ['complete', 'error']:
+                    st.session_state.processing_started = False
+                    return status
+        except queue.Empty:
+            pass
+        
+        # Fall back to status file if queue is empty
+        file_status = load_status()
+        if file_status:
+            if file_status['status'] in ['complete', 'error']:
+                st.session_state.processing_started = False
+            return file_status
+    
+    return None
+
+def display_processing_status():
+    """Display the current processing status"""
+    status = check_processing_status()
+    
+    if status:
+        if status['status'] == 'complete':
+            st.success("✅ Processing completed successfully!")
+            return True
+        elif status['status'] == 'error':
+            st.error(f"❌ Error during processing: {status.get('error', 'Unknown error')}")
+            return False
+    
+    # Show progress bar if processing is ongoing
+    if st.session_state.processing_started:
+        file_status = load_status()
+        if file_status and file_status['status'] == 'processing':
+            progress = max(0, min(100, int((file_status['current'] / file_status['total']) * 100)))
             st.progress(progress)
-        if status == 'complete':
-            st.markdown("<div class='simple-info'>Processing completed!</div>", unsafe_allow_html=True)
-            if os.path.exists(processing_file):
-                with open(processing_file, 'rb') as f:
-                    st.markdown("<div class='styled-download'>", unsafe_allow_html=True)
-                    st.download_button(
-                        label=download_label,
-                        data=f,
-                        file_name=os.path.basename(processing_file),
-                        mime="text/csv",
-                        key="download_final"
-                    )
-                    st.markdown("</div>", unsafe_allow_html=True)
-        elif status == 'error':
-            st.markdown(f"<div class='simple-error'>Error processing product {current_sku}: {error}</div>", unsafe_allow_html=True)
-        elif status in ['starting', 'processing']:
-            st.markdown(f"<span style='color:var(--primary-color);'>Processing product <b>{current}</b> of <b>{total}</b>: <b>{current_sku}</b></span>", unsafe_allow_html=True)
-            time.sleep(2)
-            st.experimental_rerun()
+            st.info(f"Processing product {file_status['current']} of {file_status['total']}: {file_status['current_sku']}")
+    
+    return False
 
 def main():
+    # Initialize session state
+    initialize_session_state()
+    
     st.markdown("""
         <div class='simple-title'>📝 Product Description Generator</div>
         <div class='simple-subtitle'>Transform your product data into compelling descriptions using AI</div>
     """, unsafe_allow_html=True)
 
+    # Add reset button in the top right
     col1, col2, col3 = st.columns([1, 1, 1])
     with col3:
         if st.button("🔄 Reset All Data", type="secondary", help="Clear all processed files and start fresh"):
@@ -482,6 +510,7 @@ def main():
             st.success("✅ All data has been reset! Please refresh the page.")
             st.rerun()
 
+    # Centered layout with two simple cards
     col1, col2 = st.columns([1, 2], gap="large")
 
     with col1:
@@ -490,13 +519,16 @@ def main():
                 <h2 style='color: var(--primary-color); font-weight: 700;'>📋 Input Options</h2>
             </div>
         """, unsafe_allow_html=True)
+        
+        # Add model selection
         model_choice = st.selectbox(
             "Choose AI Model",
             ("Gemini", "OpenAI"),
-            index=0,
+            index=0, # Default to Gemini
             key="model_select",
             help="Select the AI model. For OpenAI, ensure a valid API key is in your .env file."
         )
+
         scenario_options = [
             "Select your scenario",
             "Only Product SKUs",
@@ -583,6 +615,7 @@ def main():
                 <h3 style='color:var(--primary-color);'>📊 Data Processing</h3>
             </div>
         """, unsafe_allow_html=True)
+        
         if scenario == 'sku_only':
             if 'sku' not in df.columns:
                 st.markdown("<div class='simple-error'>❌ The file must contain a 'sku' column!</div>", unsafe_allow_html=True)
@@ -613,8 +646,67 @@ def main():
                     </div>
                 </div>
             """, unsafe_allow_html=True)
-            processing_file = 'enriched_products.csv'
-            poll_status_and_update_ui(processing_file, "⬇️ Download Results")
+            
+            # Check if processing is already running
+            if st.session_state.processing_started:
+                display_processing_status()
+            else:
+                if st.button("Start Processing", key="start_btn", type="primary"):
+                    # Always start fresh when the button is clicked.
+                    reset_all_data()
+                    
+                    with st.spinner("Initializing processing..."):
+                        try:
+                            # Use model based on user's choice
+                            use_openai = (model_choice == "OpenAI")
+
+                            # Check for API key presence if selected
+                            if use_openai and not os.getenv("OPENAI_API_KEY"):
+                                st.markdown("<div class='simple-error'>❌ OpenAI API key is missing! Please add it to your .env file.</div>", unsafe_allow_html=True)
+                                return
+                            if not use_openai and not os.getenv("GEMINI_API_KEY"):
+                                st.markdown("<div class='simple-error'>❌ Gemini API key is missing! Please add it to your .env file.</div>", unsafe_allow_html=True)
+                                return
+
+                            generator = ProductDescriptionGenerator(use_openai=use_openai)
+                            
+                            merged_df = cleaned_df.copy()
+                            merged_df['description'] = ''
+                            merged_df['related_products'] = ''
+
+                            to_process = merged_df
+                            total_to_process = len(to_process)
+                            
+                            if total_to_process == 0:
+                                st.markdown("<div class='simple-info'>All products have already been processed!</div>", unsafe_allow_html=True)
+                                return
+                            
+                            # Initialize status
+                            initial_status = {
+                                'current': 0,
+                                'total': total_to_process,
+                                'current_sku': None,
+                                'status': 'starting',
+                                'error': None,
+                                'last_updated': datetime.datetime.now().isoformat()
+                            }
+                            save_status(initial_status)
+                            
+                            # Start background processing
+                            st.session_state.processing_started = True
+                            thread = threading.Thread(
+                                target=process_products_in_background,
+                                args=(generator, to_process, {}, 'enriched_products.csv', st.session_state.status_queue)
+                            )
+                            thread.daemon = True
+                            thread.start()
+                            st.session_state.processing_thread = thread
+                            
+                            st.rerun()
+
+                        except Exception as e:
+                            st.markdown(f"<div class='simple-error'>An error occurred during initialization: {str(e)}</div>", unsafe_allow_html=True)
+        
         elif scenario == 'sku_image':
             if 'sku' not in df.columns or 'image_name' not in df.columns:
                 st.markdown("<div class='simple-error'>❌ The file must contain both 'sku' and 'image_name' columns!</div>", unsafe_allow_html=True)
@@ -623,16 +715,21 @@ def main():
             if not uploaded_images or len(uploaded_images) == 0:
                 st.markdown("<div class='simple-info'>Please upload all product images before starting processing.</div>", unsafe_allow_html=True)
                 return
+            
+            # Create a mapping of image names without extensions to actual uploaded files
             image_name_mapping = {}
             for img in uploaded_images:
                 base_name = os.path.splitext(img.name)[0]
                 image_name_mapping[base_name] = img
+
+            # Only check for missing images for rows where image_name is present and not blank/NaN
             if 'image_name' in df.columns:
                 image_name_set = set(str(x) for x in df['image_name'] if pd.notna(x) and str(x).strip() != '')
                 uploaded_image_bases = set(image_name_mapping.keys())
                 missing_images = image_name_set - uploaded_image_bases
             else:
                 missing_images = set()
+
             st.markdown(f"<div class='simple-info'>Total products: <b>{len(df)}</b><br>Total images uploaded: <b>{len(uploaded_images)}</b>" + (f"<br>Image matching: <b>{len(image_name_set)}</b> required, <b>{len(uploaded_image_bases)}</b> found" if 'image_name' in df.columns else "") + "</div>", unsafe_allow_html=True)
             if missing_images:
                 st.markdown(f"<div class='simple-error'>The following images are missing in the uploaded files: {', '.join(missing_images)}</div>", unsafe_allow_html=True)
@@ -663,8 +760,66 @@ def main():
                     </div>
                 </div>
             """, unsafe_allow_html=True)
-            processing_file = 'enriched_products_with_images.csv'
-            poll_status_and_update_ui(processing_file, "⬇️ Download Results (With Images)")
+            
+            # Check if processing is already running
+            if st.session_state.processing_started:
+                display_processing_status()
+            else:
+                if st.button("Start Processing", key="start_btn_img", type="primary"):
+                    # Always start fresh when the button is clicked.
+                    reset_all_data()
+                    
+                    with st.spinner("Initializing processing..."):
+                        try:
+                            # Use model based on user's choice
+                            use_openai = (model_choice == "OpenAI")
+
+                            # Check for API key presence if selected
+                            if use_openai and not os.getenv("OPENAI_API_KEY"):
+                                st.markdown("<div class='simple-error'>❌ OpenAI API key is missing! Please add it to your .env file.</div>", unsafe_allow_html=True)
+                                return
+                            if not use_openai and not os.getenv("GEMINI_API_KEY"):
+                                st.markdown("<div class='simple-error'>❌ Gemini API key is missing! Please add it to your .env file.</div>", unsafe_allow_html=True)
+                                return
+
+                            generator = ProductDescriptionGenerator(use_openai=use_openai)
+                            
+                            merged_df = cleaned_df.copy()
+                            merged_df['description'] = ''
+                            merged_df['related_products'] = ''
+
+                            to_process = merged_df
+                            total_to_process = len(to_process)
+                            
+                            if total_to_process == 0:
+                                st.markdown("<div class='simple-info'>All products have already been processed!</div>", unsafe_allow_html=True)
+                                return
+                            
+                            # Initialize status
+                            initial_status = {
+                                'current': 0,
+                                'total': total_to_process,
+                                'current_sku': None,
+                                'status': 'starting',
+                                'error': None,
+                                'last_updated': datetime.datetime.now().isoformat()
+                            }
+                            save_status(initial_status)
+                            
+                            # Start background processing
+                            st.session_state.processing_started = True
+                            thread = threading.Thread(
+                                target=process_products_in_background,
+                                args=(generator, to_process, image_name_mapping, 'enriched_products_with_images.csv', st.session_state.status_queue)
+                            )
+                            thread.daemon = True
+                            thread.start()
+                            st.session_state.processing_thread = thread
+                            
+                            st.rerun()
+
+                        except Exception as e:
+                            st.markdown(f"<div class='simple-error'>An error occurred during initialization: {str(e)}</div>", unsafe_allow_html=True)
 
     # --- Always show download button if output file exists (for user reliability) ---
     if os.path.exists('enriched_products.csv'):
@@ -691,4 +846,4 @@ def main():
             )
 
 if __name__ == "__main__":
-    main() 
+    main()
