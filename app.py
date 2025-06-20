@@ -99,13 +99,12 @@ def process_products_in_background(generator, df, image_name_mapping, output_fil
                     image_name = str(row['image_name'])
                 
                 image_file = image_name_mapping.get(image_name) if image_name and image_name_mapping else None
-                current_item_identifier = sku or image_name or f"row {processed_count}"
+                current_item_identifier = sku or image_name or f"row {i+1}"
 
                 # Update status
                 status = {
                     'current': processed_count, 'total': total_products,
-                    'current_sku': current_item_identifier, 'status': 'processing', 'error': None,
-                    'last_updated': datetime.datetime.now().isoformat()
+                    'current_sku': current_item_identifier, 'status': 'processing', 'error': None
                 }
                 status_queue.put(status)
                 save_status(status)
@@ -170,12 +169,14 @@ Now, perform the analysis for the provided SKU and image.
                         decision = validation_data.get("decision", "MISMATCH").upper()
 
                         if decision != "MATCH":
+                            # Provide a detailed error message for debugging
                             sku_cat = validation_data.get('sku_category', 'Unknown')
                             img_cat = validation_data.get('image_category', 'Unknown')
                             error_message = f"Image-SKU Mismatch for '{sku}'. AI decided categories do not match. SKU Category: '{sku_cat}', Image Category: '{img_cat}'."
                             raise ValueError(error_message)
 
                     except (json.JSONDecodeError, ValueError) as e:
+                        # Reraise the ValueError with the detailed message, or create a new one for JSON errors
                         if isinstance(e, ValueError):
                             raise e
                         else:
@@ -219,22 +220,19 @@ Now, perform the analysis for the provided SKU and image.
 
             except Exception as e:
                 error_message = str(e)
-                status = {
-                    'current': processed_count, 'total': total_products, 'current_sku': current_item_identifier,
-                    'status': 'error', 'error': error_message, 'last_updated': datetime.datetime.now().isoformat()
-                }
+                status = {'current': processed_count, 'total': total_products, 'current_sku': current_item_identifier, 'status': 'error', 'error': error_message}
                 status_queue.put(status)
                 save_status(status)
                 if "Image-SKU Mismatch" in error_message:
                     return
                 continue
 
-        final_status = {'current': total_products, 'total': total_products, 'status': 'complete', 'error': None, 'last_updated': datetime.datetime.now().isoformat()}
+        final_status = {'current': total_products, 'total': total_products, 'status': 'complete', 'error': None}
         status_queue.put(final_status)
         save_status(final_status)
 
     except Exception as e:
-        error_status = {'status': 'error', 'error': str(e), 'last_updated': datetime.datetime.now().isoformat()}
+        error_status = {'status': 'error', 'error': str(e)}
         status_queue.put(error_status)
         save_status(error_status)
 
@@ -444,11 +442,7 @@ st.markdown("""
 def process_dataframe(df):
     """Process dataframe to remove duplicates and prepare for analysis"""
     original_count = len(df)
-    if 'sku' in df.columns:
-        # Ensure SKU column is string type for proper duplicate removal
-        df['sku'] = df['sku'].astype(str)
-        df.dropna(subset=['sku'], inplace=True)
-        df = df.drop_duplicates(subset=['sku'], keep='first')
+    df = df.drop_duplicates(subset=['sku'], keep='first')
     cleaned_count = len(df)
     return df, original_count, cleaned_count
 
@@ -527,11 +521,8 @@ def main():
 
     # If a process is active, show the monitoring UI
     if st.session_state.get('processing', False):
-        st.info("Processing is in progress. You can refresh this page or use the button below to see updates without interrupting the job.")
+        st.info("Processing is in progress. You can switch tabs; the process will continue in the background.")
         
-        # Add a refresh button for a better user experience
-        st.button("🔄 Refresh Status")
-
         progress_bar = st.progress(0, text="Waiting for progress...")
         status_text = st.empty()
         error_placeholder = st.empty()
@@ -546,6 +537,8 @@ def main():
 
             if status.get('status') == 'error':
                 error_placeholder.error(f"Error on product {status.get('current_sku', 'N/A')}: {status.get('error', 'Unknown')}")
+                if "Image-SKU Mismatch" in str(status.get('error')):
+                    st.error("Processing stopped due to a critical mismatch error.")
                 st.session_state.processing = False
 
             elif status.get('status') == 'complete':
@@ -555,12 +548,9 @@ def main():
                         st.download_button("⬇️ Download Final Results", f, os.path.basename(st.session_state.output_file), "text/csv", key="download_final_complete")
                 st.session_state.processing = False
         
-        # The problematic auto-rerun loop has been removed to ensure stability on deployment.
-        # The user can now manually refresh.
         if st.session_state.get('processing', False):
-             # To keep the UI showing the progress without a user clicking refresh every time,
-             # we can add a meta refresh tag. This is a more stable way than st.rerun().
-             st.markdown('<meta http-equiv="refresh" content="5">', unsafe_allow_html=True)
+             time.sleep(3)
+             st.rerun()
 
     # If no process is active, show the configuration UI
     else:
