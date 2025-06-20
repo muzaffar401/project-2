@@ -71,31 +71,16 @@ def load_progress(output_file):
     return None
 
 def process_products_background(generator, df, output_file, status_queue):
-    """Background processing function with enhanced error handling and state management"""
+    """Background processing function with robust counter."""
     try:
         total_products = len(df)
-        processed_count = 0
-        
-        # Load existing progress if available
-        existing_df = load_progress(output_file)
-        if existing_df is not None:
-            # Merge with existing progress
-            df = pd.merge(df, existing_df, on='sku', how='left', suffixes=('', '_existing'))
-            df['description'] = df['description_existing'].combine_first(df['description'])
-            df['related_products'] = df['related_products_existing'].combine_first(df['related_products'])
-            df = df[['sku', 'description', 'related_products']]
-            processed_count = len(df[df['description'].notna() & (df['description'] != '')])
-        
-        for i, row in df.iterrows():
+        # The 'df' passed to this function is the 'to_process' dataframe,
+        # so we just need to iterate through it.
+        for processed_count, (i, row) in enumerate(df.iterrows(), 1):
             try:
-                # Skip if already processed
-                if pd.notna(row['description']) and row['description'] != '' and row['description'] != 'Description generation failed.':
-                    processed_count += 1
-                    continue
-                
                 # Update status
                 status = {
-                    'current': processed_count + 1,
+                    'current': processed_count,
                     'total': total_products,
                     'current_sku': str(row['sku']),
                     'status': 'processing',
@@ -116,7 +101,7 @@ def process_products_background(generator, df, output_file, status_queue):
                             df.at[i, 'related_products'] = ' | '.join(related)
                             break
                         elif retry < max_retries - 1:
-                            time.sleep(30 * (retry + 1))  # Exponential backoff
+                            time.sleep(30 * (retry + 1))
                             continue
                     except Exception as e:
                         if retry < max_retries - 1:
@@ -126,12 +111,11 @@ def process_products_background(generator, df, output_file, status_queue):
                 
                 # Save progress after each successful product
                 save_progress(df, output_file)
-                processed_count += 1
                 time.sleep(30)  # Rate limiting
                 
             except Exception as e:
                 status = {
-                    'current': processed_count + 1,
+                    'current': processed_count,
                     'total': total_products,
                     'current_sku': str(row['sku']),
                     'status': 'error',
@@ -140,8 +124,6 @@ def process_products_background(generator, df, output_file, status_queue):
                 }
                 status_queue.put(status)
                 save_status(status)
-                # Save progress even on error
-                save_progress(df, output_file)
                 continue
 
         # Mark as complete
@@ -520,11 +502,15 @@ def main():
             </div>
         """, unsafe_allow_html=True)
         
-        # Show progress
-        progress = int((processing_state['current'] / processing_state['total']) * 100)
-        st.progress(progress)
+        # Show progress with a safety check
+        current = processing_state.get('current')
+        total = processing_state.get('total')
+        if isinstance(current, (int, float)) and isinstance(total, (int, float)) and total > 0:
+            progress = max(0, min(100, int((current / total) * 100)))
+            st.progress(progress)
+        
         st.markdown(
-            f"<span style='color:var(--primary-color);'>Processing product <b>{processing_state['current']}</b> of <b>{processing_state['total']}</b>: <b>{processing_state['current_sku']}</b></span>",
+            f"<span style='color:var(--primary-color);'>Processing product <b>{processing_state.get('current', 0)}</b> of <b>{processing_state.get('total', 0)}</b>: <b>{processing_state.get('current_sku', '')}</b></span>",
             unsafe_allow_html=True
         )
         
@@ -772,10 +758,15 @@ def main():
                                     )
                                     continue
                                 
-                                progress = int((status['current'] / status['total']) * 100)
-                                progress_placeholder.progress(progress)
+                                # Safely update progress bar
+                                current = status.get('current')
+                                total = status.get('total')
+                                if isinstance(current, (int, float)) and isinstance(total, (int, float)) and total > 0:
+                                    progress = max(0, min(100, int((current / total) * 100)))
+                                    progress_placeholder.progress(progress)
+                                
                                 status_placeholder.markdown(
-                                    f"<span style='color:var(--primary-color);'>Processing product <b>{status['current']}</b> of <b>{status['total']}</b>: <b>{status['current_sku']}</b></span>",
+                                    f"<span style='color:var(--primary-color);'>Processing product <b>{status.get('current', 0)}</b> of <b>{status.get('total', 0)}</b>: <b>{status.get('current_sku', '')}</b></span>",
                                     unsafe_allow_html=True
                                 )
                                 
@@ -1026,12 +1017,19 @@ def main():
                                         unsafe_allow_html=True
                                     )
                                     continue
-                                progress = int((status['current'] / status['total']) * 100)
-                                progress_placeholder.progress(progress)
+                                
+                                # Safely update progress bar
+                                current = status.get('current')
+                                total = status.get('total')
+                                if isinstance(current, (int, float)) and isinstance(total, (int, float)) and total > 0:
+                                    progress = max(0, min(100, int((current / total) * 100)))
+                                    progress_placeholder.progress(progress)
+                                
                                 status_placeholder.markdown(
-                                    f"<span style='color:var(--primary-color);'>Processing product <b>{status['current']}</b> of <b>{status['total']}</b>: <b>{status['current_sku']}</b></span>",
+                                    f"<span style='color:var(--primary-color);'>Processing product <b>{status.get('current', 0)}</b> of <b>{status.get('total', 0)}</b>: <b>{status.get('current_sku', '')}</b></span>",
                                     unsafe_allow_html=True
                                 )
+                                
                                 time.sleep(5)
                                 st.rerun()
                             except queue.Empty:
