@@ -527,8 +527,11 @@ def main():
 
     # If a process is active, show the monitoring UI
     if st.session_state.get('processing', False):
-        st.info("Processing is in progress. You can switch tabs; the process will continue in the background.")
+        st.info("Processing is in progress. You can refresh this page or use the button below to see updates without interrupting the job.")
         
+        # Add a refresh button for a better user experience
+        st.button("🔄 Refresh Status")
+
         progress_bar = st.progress(0, text="Waiting for progress...")
         status_text = st.empty()
         error_placeholder = st.empty()
@@ -543,8 +546,6 @@ def main():
 
             if status.get('status') == 'error':
                 error_placeholder.error(f"Error on product {status.get('current_sku', 'N/A')}: {status.get('error', 'Unknown')}")
-                if "Image-SKU Mismatch" in str(status.get('error')):
-                    st.error("Processing stopped due to a critical mismatch error.")
                 st.session_state.processing = False
 
             elif status.get('status') == 'complete':
@@ -554,9 +555,12 @@ def main():
                         st.download_button("⬇️ Download Final Results", f, os.path.basename(st.session_state.output_file), "text/csv", key="download_final_complete")
                 st.session_state.processing = False
         
+        # The problematic auto-rerun loop has been removed to ensure stability on deployment.
+        # The user can now manually refresh.
         if st.session_state.get('processing', False):
-             time.sleep(3)
-             st.rerun()
+             # To keep the UI showing the progress without a user clicking refresh every time,
+             # we can add a meta refresh tag. This is a more stable way than st.rerun().
+             st.markdown('<meta http-equiv="refresh" content="5">', unsafe_allow_html=True)
 
     # If no process is active, show the configuration UI
     else:
