@@ -78,37 +78,18 @@ class ProductDescriptionGenerator:
                         image_parts = [{"mime_type": mime_type, "data": image_bytes}]
                         content.append(image_parts[0])
                     
-                    # Add timeout and safety settings
+                    # Corrected generation_config and added request_options for timeout
                     response = model.generate_content(
                         content,
-                        generation_config=genai.types.GenerationConfig(
-                            max_output_tokens=400,
-                            temperature=0.7
-                        ),
-                        safety_settings=[
-                            {
-                                "category": "HARM_CATEGORY_HARASSMENT",
-                                "threshold": "BLOCK_NONE"
-                            },
-                            {
-                                "category": "HARM_CATEGORY_HATE_SPEECH",
-                                "threshold": "BLOCK_NONE"
-                            },
-                            {
-                                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                                "threshold": "BLOCK_NONE"
-                            },
-                            {
-                                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                                "threshold": "BLOCK_NONE"
-                            }
-                        ]
+                        generation_config={
+                            "max_output_tokens": 400,
+                            "temperature": 0.7
+                        },
+                        request_options={"timeout": 60} # Add timeout
                     )
                     
-                    if response.text:
-                        return response.text
-                    else:
-                        return "API_CALL_FAILED"
+                    # Simplified response handling
+                    return response.text if response.text else "API_CALL_FAILED"
                         
                 except Exception as e:
                     print(f"Gemini API call failed on attempt {attempt + 1}: {e}")

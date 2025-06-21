@@ -141,6 +141,108 @@ def test_api_connection(generator):
     except Exception as e:
         return False, f"API test failed: {str(e)}"
 
+def test_validation_logic(generator, test_sku, test_image_file):
+    """Test the validation logic with a specific SKU and image"""
+    try:
+        print(f"Testing validation: SKU='{test_sku}' with image='{test_image_file.name}'")
+        
+        # Reset file pointer
+        test_image_file.seek(0)
+        image_bytes = test_image_file.read()
+        test_image_file.seek(0)
+        
+        # Validate image format
+        img = Image.open(io.BytesIO(image_bytes))
+        mime_type = Image.MIME[img.format]
+        
+        readable_sku = test_sku.replace('_', ' ').replace('__', ' ')
+        
+        # Pre-validation check
+        food_keywords = ['baisan', 'shan', 'masala', 'achar', 'spice', 'food', 'rice', 'wheat', 'flour', 'sugar', 'salt', 'oil', 'ghee', 'milk', 'bread', 'cake', 'cookie', 'chocolate', 'tea', 'coffee', 'juice', 'soda', 'water', 'milk', 'yogurt', 'cheese', 'meat', 'fish', 'vegetable', 'fruit', 'grain', 'pulse', 'dal', 'lentil', 'bean', 'nut', 'seed']
+        non_food_keywords = ['shoe', 'shoes', 'footwear', 'boot', 'sandal', 'sneaker', 'phone', 'mobile', 'electronics', 'computer', 'laptop', 'tv', 'television', 'camera', 'watch', 'clock', 'clothing', 'shirt', 'pants', 'dress', 'jacket', 'coat', 'hat', 'cap', 'bag', 'purse', 'wallet', 'furniture', 'chair', 'table', 'bed', 'sofa', 'car', 'vehicle', 'bike', 'bicycle', 'toy', 'game', 'book', 'pen', 'paper']
+        
+        sku_lower = test_sku.lower()
+        is_food_sku = any(keyword in sku_lower for keyword in food_keywords)
+        
+        image_lower = test_image_file.name.lower()
+        has_non_food_image = any(keyword in image_lower for keyword in non_food_keywords)
+        
+        print(f"Pre-validation: SKU food-like={is_food_sku}, Image non-food-like={has_non_food_image}")
+        
+        if is_food_sku and has_non_food_image:
+            return False, f"PRE-VALIDATION FAILED: SKU '{test_sku}' suggests food but image '{test_image_file.name}' suggests non-food"
+        
+        # AI validation
+        validation_prompt = f"""
+CRITICAL TASK: You are validating product listings. The SKU "{test_sku}" suggests a product named "{readable_sku}".
+
+You MUST analyze the image and determine if it matches the SKU.
+
+RULES:
+1. If the image shows ANYTHING different from what the SKU suggests, it's a MISMATCH
+2. Food SKU + Non-food image = MISMATCH
+3. Clothing SKU + Electronics image = MISMATCH
+4. Any obvious mismatch = STOP PROCESSING
+
+EXAMPLES OF MISMATCHES:
+- SKU: "BAISAN" (food) + Image: shoes = MISMATCH
+- SKU: "SHAN_MASALA" (spice) + Image: phone = MISMATCH
+- SKU: "COCA_COLA" (drink) + Image: shirt = MISMATCH
+
+Return ONLY this JSON format:
+{{
+  "match": false,
+  "sku_type": "what the SKU suggests",
+  "image_type": "what the image shows",
+  "reason": "why they don't match"
+}}
+
+OR if they match:
+{{
+  "match": true,
+  "sku_type": "what the SKU suggests", 
+  "image_type": "what the image shows",
+  "reason": "why they match"
+}}
+
+Be very strict. If in doubt, mark as mismatch.
+"""
+        
+        validation_response = generator._make_api_call(validation_prompt, image_bytes=image_bytes, mime_type=mime_type)
+        print(f"AI Validation response: {validation_response}")
+        
+        try:
+            clean_response = validation_response.strip().lstrip('```json').rstrip('```').strip()
+            validation_data = json.loads(clean_response)
+            is_match = validation_data.get("match", False)
+            
+            if not is_match:
+                sku_type = validation_data.get('sku_type', 'Unknown')
+                image_type = validation_data.get('image_type', 'Unknown')
+                reason = validation_data.get('reason', 'No reason provided')
+                return False, f"AI VALIDATION FAILED: SKU suggests '{sku_type}' but image shows '{image_type}'. Reason: {reason}"
+            else:
+                return True, "Validation passed - SKU and image match"
+                
+        except json.JSONDecodeError:
+            # Fallback validation
+            simple_prompt = f"""
+The SKU "{test_sku}" suggests a product named "{readable_sku}".
+Does the image show the SAME TYPE of product?
+Answer with ONLY "MATCH" or "MISMATCH".
+"""
+            simple_response = generator._make_api_call(simple_prompt, image_bytes=image_bytes, mime_type=mime_type)
+            
+            if simple_response and "MISMATCH" in simple_response.upper():
+                return False, f"Simple validation detected mismatch for SKU '{test_sku}'"
+            elif simple_response and "MATCH" in simple_response.upper():
+                return True, "Simple validation passed - SKU and image match"
+            else:
+                return False, f"Validation unclear for SKU '{test_sku}', treating as mismatch for safety"
+                
+    except Exception as e:
+        return False, f"Validation test failed: {str(e)}"
+
 def process_products_in_background(generator, df, image_name_mapping, output_file):
     """
     A single, robust background processing function for all scenarios.
@@ -236,87 +338,146 @@ def process_products_in_background(generator, df, image_name_mapping, output_fil
                         
                         readable_sku = sku.replace('_', ' ').replace('__', ' ')
                         
-                        # Simplified validation prompt to avoid getting stuck
-                        validation_prompt = f"""
-You are a highly analytical AI system for verifying product listings. Your task is to determine if a product image matches its SKU by following a strict, logical process and returning a JSON object.
-
-**Input:**
-1.  **SKU:** `{sku}` (which is for a product named "{readable_sku}")
-2.  **IMAGE:** [An image will be provided]
-
-**Instructions:**
-1.  **Analyze ONLY the SKU:** What is the general category of the product based *only* on the SKU text?
-2.  **Analyze ONLY the Image:** What is the general category of the product shown *only* in the image?
-3.  **Compare and Decide:** Based on the two categories you just identified, do they represent the same type of product? A mismatch occurs if the categories are fundamentally different (e.g., 'Food' vs. 'Footwear').
-
-**Output Format:**
-You MUST return a single, raw JSON object with the following three keys:
-- `sku_category`: Your conclusion from Instruction 1.
-- `image_category`: Your conclusion from Instruction 2.
-- `decision`: Your final verdict, which must be either the single word `MATCH` or `MISMATCH`.
-
-**Example 1 (Mismatch):**
-Input:
-- SKU: `BAISAN_HALF_1_2KG`
-- Image: [Image of shoes]
-Expected JSON Output:
-{{
-  "sku_category": "Food/Groceries",
-  "image_category": "Footwear/Shoes",
-  "decision": "MISMATCH"
-}}
-
-**Example 2 (Match):**
-Input:
-- SKU: `SHAN_MASALA_50G`
-- Image: [Image of Shan Masala spice mix]
-Expected JSON Output:
-{{
-  "sku_category": "Food/Groceries",
-  "image_category": "Food/Groceries",
-  "decision": "MATCH"
-}}
-
-Now, perform the analysis for the provided SKU and image.
-"""
-                        print(f"Making validation API call for {current_item_identifier}")
-                        validation_response_text = generator._make_api_call(validation_prompt, image_bytes=image_bytes, mime_type=mime_type)
-                        print(f"Validation response received: {validation_response_text[:100]}...")
+                        # PRE-VALIDATION: Check for obvious mismatches in filenames
+                        print(f"Pre-validation check: SKU='{sku}', Image='{image_name}'")
                         
+                        # List of food-related keywords
+                        food_keywords = ['baisan', 'shan', 'masala', 'achar', 'spice', 'food', 'rice', 'wheat', 'flour', 'sugar', 'salt', 'oil', 'ghee', 'milk', 'bread', 'cake', 'cookie', 'chocolate', 'tea', 'coffee', 'juice', 'soda', 'water', 'milk', 'yogurt', 'cheese', 'meat', 'fish', 'vegetable', 'fruit', 'grain', 'pulse', 'dal', 'lentil', 'bean', 'nut', 'seed']
+                        
+                        # List of non-food keywords that would indicate mismatch
+                        non_food_keywords = ['shoe', 'shoes', 'footwear', 'boot', 'sandal', 'sneaker', 'phone', 'mobile', 'electronics', 'computer', 'laptop', 'tv', 'television', 'camera', 'watch', 'clock', 'clothing', 'shirt', 'pants', 'dress', 'jacket', 'coat', 'hat', 'cap', 'bag', 'purse', 'wallet', 'furniture', 'chair', 'table', 'bed', 'sofa', 'car', 'vehicle', 'bike', 'bicycle', 'toy', 'game', 'book', 'pen', 'paper']
+                        
+                        # Check if SKU contains food keywords
+                        sku_lower = sku.lower()
+                        is_food_sku = any(keyword in sku_lower for keyword in food_keywords)
+                        
+                        # Check if image name contains non-food keywords
+                        image_lower = image_name.lower() if image_name else ""
+                        has_non_food_image = any(keyword in image_lower for keyword in non_food_keywords)
+                        
+                        print(f"Pre-validation: SKU food-like={is_food_sku}, Image non-food-like={has_non_food_image}")
+                        
+                        # If SKU suggests food but image suggests non-food, it's a clear mismatch
+                        if is_food_sku and has_non_food_image:
+                            error_message = f"🚫 CRITICAL MISMATCH: SKU '{sku}' suggests food product but image name '{image_name}' suggests non-food item"
+                            print(f"PRE-VALIDATION FAILED - STOPPING PROCESSING: {error_message}")
+                            # Set error status immediately
+                            status = {
+                                'current': processed_count, 'total': total_products,
+                                'current_sku': current_item_identifier, 'status': 'error',
+                                'error': error_message,
+                                'last_updated': datetime.datetime.now().isoformat()
+                            }
+                            save_status(status)
+                            remove_processing_lock()
+                            return  # Exit the function immediately
+                        
+                        # Much stricter validation prompt
+                        validation_prompt = f"""
+CRITICAL TASK: You are validating product listings. The SKU "{sku}" suggests a product named "{readable_sku}".
+
+You MUST analyze the image and determine if it matches the SKU.
+
+RULES:
+1. If the image shows ANYTHING different from what the SKU suggests, it's a MISMATCH
+2. Food SKU + Non-food image = MISMATCH
+3. Clothing SKU + Electronics image = MISMATCH
+4. Any obvious mismatch = STOP PROCESSING
+
+EXAMPLES OF MISMATCHES:
+- SKU: "BAISAN" (food) + Image: shoes = MISMATCH
+- SKU: "SHAN_MASALA" (spice) + Image: phone = MISMATCH
+- SKU: "COCA_COLA" (drink) + Image: shirt = MISMATCH
+
+Return ONLY this JSON format:
+{{
+  "match": false,
+  "sku_type": "what the SKU suggests",
+  "image_type": "what the image shows",
+  "reason": "why they don't match"
+}}
+
+OR if they match:
+{{
+  "match": true,
+  "sku_type": "what the SKU suggests", 
+  "image_type": "what the image shows",
+  "reason": "why they match"
+}}
+
+Be very strict. If in doubt, mark as mismatch.
+"""
+                        print(f"Making STRICT validation API call for {current_item_identifier}")
+                        validation_response_text = generator._make_api_call(validation_prompt, image_bytes=image_bytes, mime_type=mime_type)
+                        print(f"Validation response: {validation_response_text}")
+                        
+                        # Parse validation response
                         try:
                             clean_response = validation_response_text.strip().lstrip('```json').rstrip('```').strip()
                             validation_data = json.loads(clean_response)
                             is_match = validation_data.get("match", False)
-
+                            
+                            print(f"Validation result: match={is_match}")
+                            
                             if not is_match:
-                                sku_cat = validation_data.get('sku_category', 'Unknown')
-                                img_cat = validation_data.get('image_category', 'Unknown')
+                                sku_type = validation_data.get('sku_type', 'Unknown')
+                                image_type = validation_data.get('image_type', 'Unknown')
                                 reason = validation_data.get('reason', 'No reason provided')
-                                error_message = f"Image-SKU Mismatch for '{sku}'. SKU suggests '{sku_cat}' but image shows '{img_cat}'. Reason: {reason}"
-                                print(f"VALIDATION FAILED: {error_message}")
-                                raise ValueError(error_message)
-
-                        except (json.JSONDecodeError, ValueError) as e:
-                            if isinstance(e, ValueError) and "Image-SKU Mismatch" in str(e):
-                                # This is a deliberate mismatch, stop processing
-                                print(f"CRITICAL MISMATCH DETECTED: {str(e)}")
-                                raise e
+                                error_message = f"🚫 CRITICAL MISMATCH: SKU '{sku}' suggests '{sku_type}' but image shows '{image_type}'. Reason: {reason}"
+                                print(f"VALIDATION FAILED - STOPPING PROCESSING: {error_message}")
+                                # Set error status immediately
+                                status = {
+                                    'current': processed_count, 'total': total_products,
+                                    'current_sku': current_item_identifier, 'status': 'error',
+                                    'error': error_message,
+                                    'last_updated': datetime.datetime.now().isoformat()
+                                }
+                                save_status(status)
+                                remove_processing_lock()
+                                return  # Exit the function immediately
                             else:
-                                # If validation parsing fails, try a simpler validation
-                                print(f"Validation parsing failed for {sku}, trying simple validation: {str(e)}")
-                                simple_prompt = f"""
-Does the image show the same type of product as the SKU "{sku}" (which represents "{readable_sku}")?
-Answer with ONLY "YES" or "NO".
+                                print(f"Validation PASSED for {sku}")
+                                
+                        except json.JSONDecodeError as json_error:
+                            print(f"JSON parsing failed, trying simple validation: {json_error}")
+                            # Fallback to simple validation
+                            simple_prompt = f"""
+The SKU "{sku}" suggests a product named "{readable_sku}".
+Does the image show the SAME TYPE of product?
+Answer with ONLY "MATCH" or "MISMATCH".
 """
-                                simple_response = generator._make_api_call(simple_prompt, image_bytes=image_bytes, mime_type=mime_type)
-                                if simple_response and simple_response.strip().upper() == "NO":
-                                    error_message = f"Image-SKU Mismatch for '{sku}'. Simple validation detected mismatch."
-                                    print(f"CRITICAL MISMATCH DETECTED (simple): {error_message}")
-                                    raise ValueError(error_message)
-                                elif simple_response and simple_response.strip().upper() == "YES":
-                                    print(f"Simple validation passed for {sku}")
-                                else:
-                                    print(f"Simple validation unclear for {sku}, continuing with processing")
+                            simple_response = generator._make_api_call(simple_prompt, image_bytes=image_bytes, mime_type=mime_type)
+                            print(f"Simple validation response: {simple_response}")
+                            
+                            if simple_response and "MISMATCH" in simple_response.upper():
+                                error_message = f"🚫 CRITICAL MISMATCH: Simple validation detected mismatch for SKU '{sku}'"
+                                print(f"SIMPLE VALIDATION FAILED - STOPPING PROCESSING: {error_message}")
+                                # Set error status immediately
+                                status = {
+                                    'current': processed_count, 'total': total_products,
+                                    'current_sku': current_item_identifier, 'status': 'error',
+                                    'error': error_message,
+                                    'last_updated': datetime.datetime.now().isoformat()
+                                }
+                                save_status(status)
+                                remove_processing_lock()
+                                return  # Exit the function immediately
+                            elif simple_response and "MATCH" in simple_response.upper():
+                                print(f"Simple validation PASSED for {sku}")
+                            else:
+                                # If unclear, be conservative and treat as mismatch
+                                error_message = f"🚫 CRITICAL MISMATCH: Validation unclear for SKU '{sku}', treating as mismatch for safety"
+                                print(f"UNCLEAR VALIDATION - TREATING AS MISMATCH: {error_message}")
+                                # Set error status immediately
+                                status = {
+                                    'current': processed_count, 'total': total_products,
+                                    'current_sku': current_item_identifier, 'status': 'error',
+                                    'error': error_message,
+                                    'last_updated': datetime.datetime.now().isoformat()
+                                }
+                                save_status(status)
+                                remove_processing_lock()
+                                return  # Exit the function immediately
 
                         print(f"Making description API call for {current_item_identifier}")
                         result = generator.generate_product_description_with_image(sku, image_name, image_bytes, mime_type)
@@ -393,7 +554,7 @@ Answer with ONLY "YES" or "NO".
                 print(f"Error processing product {current_item_identifier}: {error_message}")
                 
                 # Check if this is a critical image-SKU mismatch
-                if "Image-SKU Mismatch" in error_message:
+                if "Image-SKU Mismatch" in error_message or "CRITICAL MISMATCH" in error_message:
                     # Set error status and stop processing
                     status = {
                         'current': processed_count, 'total': total_products, 
@@ -671,66 +832,88 @@ def main():
             reset_all_data()
             st.success("✅ All data has been reset! Please refresh the page.")
             st.rerun()
+    
+    # Add manual refresh button
+    with col2:
+        if st.button("🔄 Refresh Status", type="secondary", help="Manually refresh the processing status"):
+            st.rerun()
 
-    # Check if processing is already running
-    if is_processing_running():
-        st.markdown("""
-            <div class='simple-info'>
-                <b>🔄 Processing is currently running in the background!</b><br>
-                You can switch tabs or close this browser window - processing will continue.<br>
-                Return to this page to check progress and download results when complete.
-            </div>
-        """, unsafe_allow_html=True)
-        
-        # Show current status
+    # Simple error check
+    try:
         status = load_status()
-        if status:
-            if status.get('status') == 'processing':
-                progress = max(0, min(100, int((status.get('current', 0) / status.get('total', 1)) * 100)))
-                st.progress(progress)
+        if status and status.get('status') == 'error':
+            error_msg = status.get('error', 'Unknown error')
+            if "Image-SKU Mismatch" in error_msg or "CRITICAL MISMATCH" in error_msg:
                 st.markdown(f"""
-                    <span style='color:var(--primary-color);'>
-                        Processing product <b>{status.get('current', 0)}</b> of <b>{status.get('total', 0)}</b>: 
-                        <b>{status.get('current_sku', '')}</b>
-                    </span>
+                    <div class='simple-error' style='background: #ffebee; border-left: 4px solid #f44336; padding: 20px; margin: 20px 0;'>
+                        <h3 style='color: #d32f2f; margin-top: 0;'>🚫 PROCESSING STOPPED - Image-SKU Mismatch Detected!</h3>
+                        <p style='color: #d32f2f; font-weight: bold;'>{error_msg}</p>
+                        <p style='color: #666; margin-bottom: 0;'>
+                            <strong>What happened:</strong> Processing has been completely stopped because a mismatch was detected. 
+                            The system found an image that doesn't match its corresponding SKU.
+                        </p>
+                        <p style='color: #666; margin-top: 10px; margin-bottom: 0;'>
+                            <strong>What this means:</strong> For example, you might have uploaded a shoe image for a food product SKU like "BAISAN".
+                        </p>
+                        <p style='color: #666; margin-top: 10px; margin-bottom: 0;'>
+                            <strong>Solution:</strong> Please check your image files and ensure they match the correct products, 
+                            then restart processing.
+                        </p>
+                    </div>
                 """, unsafe_allow_html=True)
-            elif status.get('status') == 'error':
-                error_msg = status.get('error', 'Unknown error')
-                if "Image-SKU Mismatch" in error_msg:
-                    st.markdown(f"""
-                        <div class='simple-error' style='background: #ffebee; border-left: 4px solid #f44336; padding: 20px; margin: 20px 0;'>
-                            <h3 style='color: #d32f2f; margin-top: 0;'>🚫 Image-SKU Mismatch Detected!</h3>
-                            <p style='color: #d32f2f; font-weight: bold;'>{error_msg}</p>
-                            <p style='color: #666; margin-bottom: 0;'>
-                                <strong>What this means:</strong> The uploaded image doesn't match the product described in the SKU. 
-                                For example, you might have uploaded a shoe image for a food product SKU.
-                            </p>
-                            <p style='color: #666; margin-top: 10px; margin-bottom: 0;'>
-                                <strong>Solution:</strong> Please check your image files and ensure they match the correct products, 
-                                then restart processing.
-                            </p>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Add a button to reset and try again
-                    if st.button("🔄 Reset and Try Again", type="primary"):
-                        reset_all_data()
-                        st.success("✅ Data reset! Please upload your files again with correct image-SKU matches.")
-                        st.rerun()
-                else:
-                    st.markdown(f"""
-                        <div class='simple-error'>
-                            Error processing product {status.get('current_sku', '')}: {error_msg}
-                        </div>
-                    """, unsafe_allow_html=True)
-            elif status.get('status') == 'complete':
-                st.markdown("""
-                    <div class='simple-info'>✅ Processing completed successfully!</div>
+                
+                # Add a button to reset and try again
+                if st.button("🔄 Reset and Try Again", type="primary", key="reset_error"):
+                    reset_all_data()
+                    st.success("✅ Data reset! Please upload your files again with correct image-SKU matches.")
+                    st.rerun()
+            else:
+                st.markdown(f"""
+                    <div class='simple-error'>
+                        Error processing product {status.get('current_sku', '')}: {error_msg}
+                    </div>
                 """, unsafe_allow_html=True)
-        
-        # Auto-refresh every 5 seconds
-        time.sleep(5)
-        st.rerun()
+    except Exception as e:
+        st.error(f"Error loading status: {str(e)}")
+
+    # Check if processing is running
+    try:
+        if is_processing_running():
+            st.markdown("""
+                <div class='simple-info'>
+                    <b>🔄 Processing is currently running in the background!</b><br>
+                    You can switch tabs or close this browser window - processing will continue.<br>
+                    Return to this page to check progress and download results when complete.
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # Show current status
+            status = load_status()
+            if status:
+                if status.get('status') == 'processing':
+                    progress = max(0, min(100, int((status.get('current', 0) / status.get('total', 1)) * 100)))
+                    st.progress(progress)
+                    st.markdown(f"""
+                        <span style='color:var(--primary-color);'>
+                            Processing product <b>{status.get('current', 0)}</b> of <b>{status.get('total', 0)}</b>: 
+                            <b>{status.get('current_sku', '')}</b>
+                        </span>
+                    """, unsafe_allow_html=True)
+                elif status.get('status') == 'complete':
+                    st.markdown("""
+                        <div class='simple-info'>✅ Processing completed successfully!</div>
+                    """, unsafe_allow_html=True)
+            
+            # Only auto-refresh if not in error state
+            if not status or status.get('status') != 'error':
+                # Auto-refresh every 5 seconds
+                time.sleep(5)
+                st.rerun()
+            else:
+                # If there's an error, don't auto-refresh, let user see the error
+                st.info("⚠️ Processing stopped due to an error. Please review the error message above.")
+    except Exception as e:
+        st.error(f"Error checking processing status: {str(e)}")
 
     # Centered layout with two simple cards
     col1, col2 = st.columns([1, 2], gap="large")
@@ -833,6 +1016,57 @@ def main():
                     st.session_state['scenario'] = 'sku_image'
                     st.session_state['uploaded_images'] = uploaded_images
                     st.success("✅ File uploaded successfully!")
+                    
+                    # Add test validation section
+                    if uploaded_images and len(uploaded_images) > 0:
+                        st.markdown("""
+                            <div class='simple-card' style='margin-top: 20px;'>
+                                <h4 style='color:var(--primary-color);'>🧪 Test Validation</h4>
+                                <p>Test a specific SKU-image pair to verify validation works correctly:</p>
+                            </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # Create image mapping
+                        image_name_mapping = {}
+                        for img in uploaded_images:
+                            base_name = os.path.splitext(img.name)[0]
+                            image_name_mapping[base_name] = img
+                        
+                        # Test validation interface
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            test_sku = st.text_input("Test SKU", placeholder="e.g., BAISAN", key="test_sku")
+                        with col2:
+                            test_image_name = st.selectbox("Test Image", options=list(image_name_mapping.keys()), key="test_image")
+                        
+                        if st.button("🧪 Test Validation", key="test_validation_btn"):
+                            if test_sku and test_image_name:
+                                try:
+                                    # Check for API key presence
+                                    use_openai = (model_choice == "OpenAI")
+                                    if use_openai and not os.getenv("OPENAI_API_KEY"):
+                                        st.error("❌ OpenAI API key is missing!")
+                                        return
+                                    if not use_openai and not os.getenv("GEMINI_API_KEY"):
+                                        st.error("❌ Gemini API key is missing!")
+                                        return
+                                    
+                                    generator = ProductDescriptionGenerator(use_openai=use_openai)
+                                    test_image_file = image_name_mapping[test_image_name]
+                                    
+                                    with st.spinner("Testing validation..."):
+                                        is_valid, message = test_validation_logic(generator, test_sku, test_image_file)
+                                        
+                                        if is_valid:
+                                            st.success(f"✅ {message}")
+                                        else:
+                                            st.error(f"❌ {message}")
+                                            st.info("This mismatch would stop processing if found during batch processing.")
+                                except Exception as e:
+                                    st.error(f"❌ Test failed: {str(e)}")
+                            else:
+                                st.warning("⚠️ Please enter both SKU and select an image to test.")
+                    
                 except Exception as e:
                     st.markdown(f"<div class='simple-error'>❌ Error reading file: {str(e)}</div>", unsafe_allow_html=True)
                     return
